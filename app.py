@@ -9,7 +9,8 @@ app = Flask(__name__)
 R2_ENDPOINT = os.environ.get('R2_ENDPOINT')
 R2_ACCESS_KEY = os.environ.get('R2_ACCESS_KEY')
 R2_SECRET_KEY = os.environ.get('R2_SECRET_KEY')
-R2_BUCKET = os.environ.get('R2_BUCKET')
+R2_INPUT_BUCKET = os.environ.get('R2_INPUT_BUCKET')  # bucket video sorgente
+R2_OUTPUT_BUCKET = os.environ.get('R2_OUTPUT_BUCKET')  # bucket video processati
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -36,7 +37,7 @@ def process_video():
         
         with tempfile.TemporaryDirectory() as tmpdir:
             video_path = os.path.join(tmpdir, 'input.mp4')
-            s3.download_file(R2_BUCKET, video_url, video_path)
+            s3.download_file(R2_INPUT_BUCKET, video_url, video_path)
             
             for idx, segment in enumerate(segments):
                 start = segment['start']
@@ -68,9 +69,9 @@ def process_video():
                 subprocess.run(subtitle_cmd, check=True, capture_output=True)
                 
                 output_key = f'processed/segment_{idx}_{os.path.basename(video_url)}'
-                s3.upload_file(output_path, R2_BUCKET, output_key)
+                s3.upload_file(output_path, R2_OUTPUT_BUCKET, output_key)
                 
-                output_url = f"{R2_ENDPOINT}/{R2_BUCKET}/{output_key}"
+                output_url = f"{R2_ENDPOINT}/{R2_OUTPUT_BUCKET}/{output_key}"
                 
                 results.append({
                     "segment": idx,
