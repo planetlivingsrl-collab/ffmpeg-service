@@ -8,13 +8,14 @@ import json
 app = Flask(__name__)
 
 # Configurazione R2
-R2_ENDPOINT = os.environ.get('R2_ENDPOINT')
-R2_ACCESS_KEY = os.environ.get('R2_ACCESS_KEY')
-R2_SECRET_KEY = os.environ.get('R2_SECRET_KEY')
-R2_BUCKET = os.environ.get('R2_BUCKET')
+R2_ENDPOINT = os.environ.get('R2_ENDPOINT', 'not_set')
+R2_ACCESS_KEY = os.environ.get('R2_ACCESS_KEY', 'not_set')
+R2_SECRET_KEY = os.environ.get('R2_SECRET_KEY', 'not_set')
+R2_BUCKET = os.environ.get('R2_BUCKET', 'not_set')
 
-s3 = boto3.client(
-    's3',
+# Inizializza s3 client solo quando serve (lazy loading)
+def get_s3_client():
+    return boto3.client(
     endpoint_url=R2_ENDPOINT,
     aws_access_key_id=R2_ACCESS_KEY,
     aws_secret_access_key=R2_SECRET_KEY
@@ -40,7 +41,7 @@ def process_video():
             # Download video originale
             video_path = os.path.join(tmpdir, 'input.mp4')
             video_key = video_url.split('/')[-1]
-            s3.download_file(R2_BUCKET, video_key, video_path)
+            get_s3_client().download_file(R2_BUCKET, video_key, video_path)
             
             for idx, segment in enumerate(segments):
                 start = segment['start']
@@ -77,7 +78,7 @@ def process_video():
                 
                 # 4. Upload su R2
                 output_key = f'processed/segment_{idx}_{video_key}'
-                s3.upload_file(output_path, R2_BUCKET, output_key)
+                get_s3_client().upload_file(output_path, R2_BUCKET, output_key)
                 
                 # URL pubblico (adatta al tuo setup R2)
                 output_url = f"{R2_ENDPOINT}/{R2_BUCKET}/{output_key}"
@@ -115,4 +116,5 @@ def format_time(seconds):
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
+
     app.run(host='0.0.0.0', port=port)
