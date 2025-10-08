@@ -6,12 +6,12 @@ import tempfile
 
 app = Flask(__name__)
 
-# Configurazione R2 da variabili d'ambiente (per retrocompatibilità)
+# Configurazione R2 da variabili d'ambiente
 R2_ENDPOINT = os.environ.get('R2_ENDPOINT')
 R2_ACCESS_KEY = os.environ.get('R2_ACCESS_KEY')
 R2_SECRET_KEY = os.environ.get('R2_SECRET_KEY')
 
-# Client S3 globale (opzionale, per retrocompatibilità con video_url)
+# Client S3 globale per retrocompatibilità
 s3 = boto3.client(
     's3',
     endpoint_url=R2_ENDPOINT,
@@ -26,9 +26,9 @@ def health():
 @app.route('/process', methods=['POST'])
 def process_video():
     try:
-# Supporta sia body wrapper che payload diretto
-raw_data = request.json
-data = raw_data.get('body', raw_data) if isinstance(raw_data, dict) else raw_data
+        # Supporta sia body wrapper che payload diretto
+        raw_data = request.json
+        data = raw_data.get('body', raw_data) if isinstance(raw_data, dict) else raw_data
         
         # Supporta sia s3_config che video_url
         s3_config = data.get('s3_config')
@@ -41,7 +41,6 @@ data = raw_data.get('body', raw_data) if isinstance(raw_data, dict) else raw_dat
         
         # Determina quale client S3 usare
         if s3_config:
-            # Usa credenziali dal payload
             s3_client = boto3.client(
                 's3',
                 endpoint_url=s3_config['endpoint'],
@@ -53,7 +52,6 @@ data = raw_data.get('body', raw_data) if isinstance(raw_data, dict) else raw_dat
             output_bucket = s3_config.get('output_bucket', 'shortconsottotitoli')
             video_key = s3_config['key']
         elif video_url:
-            # Usa credenziali da env
             if not s3:
                 return jsonify({"error": "S3 client not configured"}), 500
             s3_client = s3
@@ -66,7 +64,6 @@ data = raw_data.get('body', raw_data) if isinstance(raw_data, dict) else raw_dat
         results = []
         
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Download video originale
             video_path = os.path.join(tmpdir, 'input.mp4')
             s3_client.download_file(input_bucket, video_key, video_path)
             
@@ -75,7 +72,6 @@ data = raw_data.get('body', raw_data) if isinstance(raw_data, dict) else raw_dat
                 end = segment['end']
                 duration = end - start
                 
-                # Trova sottotitoli per questo segmento
                 segment_subtitles = None
                 if subtitles_data:
                     for sub_entry in subtitles_data:
@@ -83,11 +79,9 @@ data = raw_data.get('body', raw_data) if isinstance(raw_data, dict) else raw_dat
                             segment_subtitles = sub_entry.get('subtitle_srt')
                             break
                 
-                # Path temporanei
                 segment_path = os.path.join(tmpdir, f'segment_{idx}.mp4')
                 output_path = os.path.join(tmpdir, f'output_{idx}.mp4')
                 
-                # 1. Taglia video
                 cut_cmd = [
                     'ffmpeg', '-y', '-i', video_path,
                     '-ss', str(start),
@@ -97,7 +91,6 @@ data = raw_data.get('body', raw_data) if isinstance(raw_data, dict) else raw_dat
                 ]
                 subprocess.run(cut_cmd, check=True, capture_output=True)
                 
-                # 2. Aggiungi sottotitoli se presenti
                 if segment_subtitles:
                     srt_path = os.path.join(tmpdir, f'segment_{idx}.srt')
                     with open(srt_path, 'w', encoding='utf-8') as f:
@@ -113,11 +106,9 @@ data = raw_data.get('body', raw_data) if isinstance(raw_data, dict) else raw_dat
                 else:
                     output_path = segment_path
                 
-                # 3. Upload nel bucket output
                 output_key = f'segment_{idx}_{os.path.basename(video_key)}'
                 s3_client.upload_file(output_path, output_bucket, output_key)
                 
-                # Costruisci URL
                 if s3_config:
                     output_url = f"{s3_config['endpoint']}/{output_bucket}/{output_key}"
                 else:
@@ -139,4 +130,3 @@ data = raw_data.get('body', raw_data) if isinstance(raw_data, dict) else raw_dat
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-
