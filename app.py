@@ -26,7 +26,9 @@ def health():
 @app.route('/process', methods=['POST'])
 def process_video():
     try:
-        data = request.json
+# Supporta sia body wrapper che payload diretto
+raw_data = request.json
+data = raw_data.get('body', raw_data) if isinstance(raw_data, dict) else raw_data
         
         # Supporta sia s3_config che video_url
         s3_config = data.get('s3_config')
@@ -137,3 +139,4 @@ def process_video():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
+
