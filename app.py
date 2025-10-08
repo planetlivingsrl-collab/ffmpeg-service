@@ -1,3 +1,28 @@
+from flask import Flask, request, jsonify
+import os
+import boto3
+import subprocess
+import tempfile
+
+app = Flask(__name__)
+
+# Configurazione R2 da variabili d'ambiente (per retrocompatibilità)
+R2_ENDPOINT = os.environ.get('R2_ENDPOINT')
+R2_ACCESS_KEY = os.environ.get('R2_ACCESS_KEY')
+R2_SECRET_KEY = os.environ.get('R2_SECRET_KEY')
+
+# Client S3 globale (opzionale, per retrocompatibilità con video_url)
+s3 = boto3.client(
+    's3',
+    endpoint_url=R2_ENDPOINT,
+    aws_access_key_id=R2_ACCESS_KEY,
+    aws_secret_access_key=R2_SECRET_KEY
+) if R2_ENDPOINT and R2_ACCESS_KEY and R2_SECRET_KEY else None
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({"status": "ok"}), 200
+
 @app.route('/process', methods=['POST'])
 def process_video():
     try:
@@ -12,7 +37,7 @@ def process_video():
         if not segments:
             return jsonify({"error": "Missing segments"}), 400
         
-        # Determina quale client S3 usare e i bucket
+        # Determina quale client S3 usare
         if s3_config:
             # Usa credenziali dal payload
             s3_client = boto3.client(
@@ -23,10 +48,12 @@ def process_video():
                 region_name=s3_config.get('region', 'auto')
             )
             input_bucket = s3_config['bucket']
-            output_bucket = s3_config.get('output_bucket', input_bucket)  # Usa stesso bucket se non specificato
+            output_bucket = s3_config.get('output_bucket', 'shortconsottotitoli')
             video_key = s3_config['key']
         elif video_url:
-            # Usa credenziali da env (vecchio metodo)
+            # Usa credenziali da env
+            if not s3:
+                return jsonify({"error": "S3 client not configured"}), 500
             s3_client = s3
             input_bucket = os.environ.get('R2_INPUT_BUCKET', 'videoliving')
             output_bucket = os.environ.get('R2_OUTPUT_BUCKET', 'shortconsottotitoli')
@@ -37,7 +64,7 @@ def process_video():
         results = []
         
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Download video originale dal bucket INPUT
+            # Download video originale
             video_path = os.path.join(tmpdir, 'input.mp4')
             s3_client.download_file(input_bucket, video_key, video_path)
             
@@ -46,7 +73,7 @@ def process_video():
                 end = segment['end']
                 duration = end - start
                 
-                # Trova i sottotitoli per questo segmento
+                # Trova sottotitoli per questo segmento
                 segment_subtitles = None
                 if subtitles_data:
                     for sub_entry in subtitles_data:
@@ -56,12 +83,11 @@ def process_video():
                 
                 # Path temporanei
                 segment_path = os.path.join(tmpdir, f'segment_{idx}.mp4')
-                srt_path = os.path.join(tmpdir, f'segment_{idx}.srt')
                 output_path = os.path.join(tmpdir, f'output_{idx}.mp4')
                 
                 # 1. Taglia video
                 cut_cmd = [
-                    'ffmpeg', '-i', video_path,
+                    'ffmpeg', '-y', '-i', video_path,
                     '-ss', str(start),
                     '-t', str(duration),
                     '-c', 'copy',
@@ -69,13 +95,14 @@ def process_video():
                 ]
                 subprocess.run(cut_cmd, check=True, capture_output=True)
                 
-                # 2. Scrivi SRT e aggiungi sottotitoli (se presente)
+                # 2. Aggiungi sottotitoli se presenti
                 if segment_subtitles:
+                    srt_path = os.path.join(tmpdir, f'segment_{idx}.srt')
                     with open(srt_path, 'w', encoding='utf-8') as f:
                         f.write(segment_subtitles)
                     
                     subtitle_cmd = [
-                        'ffmpeg', '-i', segment_path,
+                        'ffmpeg', '-y', '-i', segment_path,
                         '-vf', f"subtitles={srt_path}:force_style='FontSize=24,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=20'",
                         '-c:a', 'copy',
                         output_path
@@ -84,15 +111,15 @@ def process_video():
                 else:
                     output_path = segment_path
                 
-                # 3. Upload nel bucket OUTPUT
-                output_key = f'segment_{idx}_{video_key}'
+                # 3. Upload nel bucket output
+                output_key = f'segment_{idx}_{os.path.basename(video_key)}'
                 s3_client.upload_file(output_path, output_bucket, output_key)
                 
-                # Costruisci URL pubblico
+                # Costruisci URL
                 if s3_config:
                     output_url = f"{s3_config['endpoint']}/{output_bucket}/{output_key}"
                 else:
-                    output_url = f"{os.environ.get('R2_ENDPOINT')}/{output_bucket}/{output_key}"
+                    output_url = f"{R2_ENDPOINT}/{output_bucket}/{output_key}"
                 
                 results.append({
                     "segment": idx,
@@ -103,6 +130,10 @@ def process_video():
         return jsonify({"success": True, "results": results}), 200
         
     except subprocess.CalledProcessError as e:
-        return jsonify({"error": f"FFmpeg error: {e.stderr.decode()}"}), 500
+        return jsonify({"error": f"FFmpeg error: {e.stderr.decode() if e.stderr else str(e)}"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
