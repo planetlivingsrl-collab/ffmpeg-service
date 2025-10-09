@@ -1,132 +1,231 @@
 from flask import Flask, request, jsonify
 import os
+import io
 import boto3
 import subprocess
 import tempfile
-from botocore.config import Config   # <— AGGIUNTO
+from urllib.parse import urlparse, unquote
+
+from botocore.config import Config
+from botocore.exceptions import ClientError
 
 app = Flask(__name__)
 
-# Configurazione R2 da variabili d'ambiente
-R2_ENDPOINT = os.environ.get('R2_ENDPOINT')
-R2_ACCESS_KEY = os.environ.get('R2_ACCESS_KEY')
-R2_SECRET_KEY = os.environ.get('R2_SECRET_KEY')
-R2_REGION     = os.environ.get('R2_REGION', 'us-east-1')  # <— AGGIUNTO (default corretto)
+# -------------------------------
+# Config da variabili d'ambiente
+# -------------------------------
+R2_ENDPOINT   = os.environ.get("R2_ENDPOINT")
+R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY")
+R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY")
+R2_REGION     = os.environ.get("R2_REGION", "us-east-1")   # default corretto
 
-def make_r2_s3_client(endpoint, access_key, secret_key, region='us-east-1'):
-    """Client S3 compatibile Cloudflare R2 (path-style + SigV4)."""
+# -------------------------------
+# Factory client R2 (path-style + SigV4)
+# -------------------------------
+def make_r2_s3_client(endpoint, access_key, secret_key, region="us-east-1"):
+    """Client S3 compatibile Cloudflare R2."""
     return boto3.client(
-        's3',
+        "s3",
         endpoint_url=endpoint,
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
         region_name=region,
         config=Config(
-            signature_version='s3v4',
-            s3={'addressing_style': 'path'}   # <— OBBLIGATORIO con R2
-        )
+            signature_version="s3v4",
+            s3={"addressing_style": "path"}  # OBBLIGATORIO su R2
+        ),
     )
 
-# Client S3 globale per retrocompatibilità
-s3 = make_r2_s3_client(R2_ENDPOINT, R2_ACCESS_KEY, R2_SECRET_KEY, R2_REGION) \
-     if R2_ENDPOINT and R2_ACCESS_KEY and R2_SECRET_KEY else None
+# Client S3 globale opzionale (per il ramo video_url)
+s3 = (
+    make_r2_s3_client(R2_ENDPOINT, R2_ACCESS_KEY, R2_SECRET_KEY, R2_REGION)
+    if R2_ENDPOINT and R2_ACCESS_KEY and R2_SECRET_KEY
+    else None
+)
 
-@app.route('/health', methods=['GET'])
+# -------------------------------
+# Health
+# -------------------------------
+@app.get("/health")
 def health():
     return jsonify({"status": "ok"}), 200
 
-@app.route('/process', methods=['POST'])
+# -------------------------------
+# DEBUG STEP 1: HEAD su oggetto
+# -------------------------------
+@app.post("/debug/head")
+def debug_head():
+    try:
+        payload = request.get_json() or {}
+        s3c = payload.get("s3_config", payload)
+
+        required = ["endpoint", "bucket", "key", "accessKeyId", "secretAccessKey"]
+        missing = [k for k in required if not s3c.get(k)]
+        if missing:
+            return jsonify({"ok": False, "error": f"Missing fields: {missing}"}), 400
+
+        region = s3c.get("region") or "us-east-1"   # mai 'auto'
+        s3_cli = make_r2_s3_client(
+            endpoint=s3c["endpoint"],
+            access_key=s3c["accessKeyId"],
+            secret_key=s3c["secretAccessKey"],
+            region=region,
+        )
+        r = s3_cli.head_object(Bucket=s3c["bucket"], Key=s3c["key"])
+        return jsonify(
+            {"ok": True, "content_length": r.get("ContentLength"), "etag": r.get("ETag")}
+        ), 200
+
+    except ClientError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+# -------------------------------
+# DEBUG: download file (opzionale)
+# -------------------------------
+@app.post("/debug/download")
+def debug_download():
+    try:
+        s3c = (request.get_json() or {}).get("s3_config")
+        if not s3c:
+            return jsonify({"ok": False, "error": "Provide s3_config"}), 400
+
+        s3_cli = make_r2_s3_client(
+            s3c["endpoint"], s3c["accessKeyId"], s3c["secretAccessKey"], s3c.get("region") or "us-east-1"
+        )
+        buf = io.BytesIO()
+        s3_cli.download_fileobj(s3c["bucket"], s3c["key"], buf)
+        return jsonify({"ok": True, "bytes": buf.tell()}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+# -------------------------------
+# DEBUG: upload "ping" (opzionale)
+# -------------------------------
+@app.post("/debug/upload")
+def debug_upload():
+    try:
+        s3c = (request.get_json() or {}).get("s3_config")
+        if not s3c:
+            return jsonify({"ok": False, "error": "Provide s3_config"}), 400
+
+        s3_cli = make_r2_s3_client(
+            s3c["endpoint"], s3c["accessKeyId"], s3c["secretAccessKey"], s3c.get("region") or "us-east-1"
+        )
+        target_key = s3c.get("target_key", "ping.txt")
+        s3_cli.put_object(Bucket=s3c["bucket"], Key=target_key, Body=b"ping")
+        return jsonify({"ok": True, "key": target_key}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+# -------------------------------
+# DEBUG: ffmpeg presente?
+# -------------------------------
+@app.get("/debug/ffmpeg")
+def debug_ffmpeg():
+    out = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True)
+    first = (out.stdout or out.stderr).splitlines()[:1]
+    return jsonify({"ok": out.returncode == 0, "line": first[0] if first else ""})
+
+# -------------------------------
+# PROCESS
+# -------------------------------
+@app.post("/process")
 def process_video():
     try:
-        raw_data = request.json
-        data = raw_data.get('body', raw_data) if isinstance(raw_data, dict) else raw_data
+        raw_data = request.get_json()
+        data = raw_data.get("body", raw_data) if isinstance(raw_data, dict) else raw_data
 
-        s3_config       = data.get('s3_config')
-        video_url       = data.get('video_url')
-        segments        = data.get('segments')
-        subtitles_data  = data.get('subtitles')
+        s3_config      = data.get("s3_config")
+        video_url      = data.get("video_url")
+        segments       = data.get("segments")
+        subtitles_data = data.get("subtitles")
 
         if not segments:
             return jsonify({"error": "Missing segments"}), 400
 
-        # Determina quale client S3 usare
+        # --- S3 client e sorgenti ---
         if s3_config:
-            # Usa SEMPRE una region reale; se non arriva dal client, default us-east-1
-            region = s3_config.get('region') or 'us-east-1'
+            region = s3_config.get("region") or "us-east-1"  # mai 'auto'
             s3_client = make_r2_s3_client(
-                endpoint=s3_config['endpoint'],
-                access_key=s3_config['accessKeyId'],
-                secret_key=s3_config['secretAccessKey'],
-                region=region
+                endpoint=s3_config["endpoint"],
+                access_key=s3_config["accessKeyId"],
+                secret_key=s3_config["secretAccessKey"],
+                region=region,
             )
-            input_bucket  = s3_config['bucket']
-            output_bucket = s3_config.get('output_bucket', 'shortconsottotitoli')
-            video_key     = s3_config['key']
+            input_bucket  = s3_config["bucket"]
+            output_bucket = s3_config.get("output_bucket", "shortconsottotitoli")
+            video_key     = s3_config["key"]
         elif video_url:
             if not s3:
                 return jsonify({"error": "S3 client not configured"}), 500
             s3_client     = s3
-            input_bucket  = os.environ.get('R2_INPUT_BUCKET', 'videoliving')
-            output_bucket = os.environ.get('R2_OUTPUT_BUCKET', 'shortconsottotitoli')
-            # estrai la key in modo robusto
-            from urllib.parse import urlparse, unquote
+            input_bucket  = os.environ.get("R2_INPUT_BUCKET", "videoliving")
+            output_bucket = os.environ.get("R2_OUTPUT_BUCKET", "shortconsottotitoli")
+            # estrai key dal video_url
             path = urlparse(video_url).path
-            video_key = unquote(path.lstrip('/').split('/')[-1])
+            video_key = unquote(path.lstrip("/").split("/")[-1])
         else:
             return jsonify({"error": "Missing video_url or s3_config"}), 400
 
-        # Pre-check esplicito: fallisce subito se key/bucket sono errati (evita timeout lunghi)
+        # --- Pre-check HEAD (fallisce subito se key inesistente o firma non valida) ---
         s3_client.head_object(Bucket=input_bucket, Key=video_key)
 
         results = []
         with tempfile.TemporaryDirectory() as tmpdir:
-            video_path = os.path.join(tmpdir, 'input.mp4')
+            video_path = os.path.join(tmpdir, "input.mp4")
             s3_client.download_file(input_bucket, video_key, video_path)
 
             for idx, segment in enumerate(segments):
-                start = segment['start']
-                end   = segment['end']
+                start    = segment["start"]
+                end      = segment["end"]
                 duration = end - start
 
-                # Sottotitoli per segmento (se presenti)
+                # Sottotitoli segmentali (se presenti)
                 segment_subtitles = None
                 if subtitles_data:
                     for sub_entry in subtitles_data:
-                        if sub_entry.get('segment_index') == idx:
-                            segment_subtitles = sub_entry.get('subtitle_srt')
+                        if sub_entry.get("segment_index") == idx:
+                            segment_subtitles = sub_entry.get("subtitle_srt")
                             break
 
-                segment_path = os.path.join(tmpdir, f'segment_{idx}.mp4')
-                output_path  = os.path.join(tmpdir, f'output_{idx}.mp4')
+                segment_path = os.path.join(tmpdir, f"segment_{idx}.mp4")
+                output_path  = os.path.join(tmpdir, f"output_{idx}.mp4")
 
+                # Cut veloce (copy)
                 cut_cmd = [
-                    'ffmpeg', '-y', '-i', video_path,
-                    '-ss', str(start), '-t', str(duration),
-                    '-c', 'copy', segment_path
+                    "ffmpeg", "-y", "-i", video_path,
+                    "-ss", str(start), "-t", str(duration),
+                    "-c", "copy", segment_path
                 ]
                 subprocess.run(cut_cmd, check=True, capture_output=True)
 
+                # Sovraimposizione sottotitoli (se presenti)
                 if segment_subtitles:
-                    srt_path = os.path.join(tmpdir, f'segment_{idx}.srt')
-                    with open(srt_path, 'w', encoding='utf-8') as f:
+                    srt_path = os.path.join(tmpdir, f"segment_{idx}.srt")
+                    with open(srt_path, "w", encoding="utf-8") as f:
                         f.write(segment_subtitles)
 
-                    # Nota: path con spazi va quotato
+                    # Nota: l'argomento viene passato come singolo token; ffmpeg
+                    # accetta il filtro con path diretto.
+                    filter_str = (
+                        f"subtitles={srt_path}:"
+                        "force_style='FontSize=24,PrimaryColour=&HFFFFFF,"
+                        "OutlineColour=&H000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=20'"
+                    )
                     subtitle_cmd = [
-                        'ffmpeg', '-y', '-i', segment_path,
-                        '-vf', f"subtitles='{srt_path}':force_style='FontSize=24,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=20'",
-                        '-c:a', 'copy', output_path
+                        "ffmpeg", "-y", "-i", segment_path,
+                        "-vf", filter_str, "-c:a", "copy", output_path
                     ]
                     subprocess.run(subtitle_cmd, check=True, capture_output=True)
                 else:
                     output_path = segment_path
 
-                output_key = f'segment_{idx}_{os.path.basename(video_key)}'
+                output_key = f"segment_{idx}_{os.path.basename(video_key)}"
                 s3_client.upload_file(output_path, output_bucket, output_key)
 
-                # URL di comodo (non firmato). Va bene se il bucket/oggetto è pubblico;
-                # per uso interno puoi rispondere con bucket/key.
-                base = s3_config['endpoint'] if s3_config else R2_ENDPOINT
+                base = s3_config["endpoint"] if s3_config else R2_ENDPOINT
                 results.append({
                     "segment": idx,
                     "url": f"{base}/{output_bucket}/{output_key}",
@@ -135,11 +234,17 @@ def process_video():
 
         return jsonify({"success": True, "results": results}), 200
 
+    except ClientError as e:
+        # Errori S3 chiari (403/404/400 ecc.)
+        return jsonify({"error": f"S3 error: {e}"}), 500
     except subprocess.CalledProcessError as e:
         return jsonify({"error": f"FFmpeg error: {e.stderr.decode() if e.stderr else str(e)}"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+# -------------------------------
+# Main
+# -------------------------------
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
