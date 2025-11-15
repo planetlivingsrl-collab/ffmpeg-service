@@ -64,8 +64,9 @@ def debug_head():
         if missing:
             return jsonify({"ok": False, "error": f"Missing fields: {missing}"}), 400
 
-        region = s3c.get("region") or "us-east-1"   # mai 'auto'
-        s3_cli = make_r2_s3_client(
+region = s3_config.get("region") or "us-east-1"
+if region == "auto":  # R2 doc dice 'auto', ma boto3 richiede region AWS valida
+    region = "us-east-1"        s3_cli = make_r2_s3_client(
             endpoint=s3c["endpoint"],
             access_key=s3c["accessKeyId"],
             secret_key=s3c["secretAccessKey"],
@@ -158,6 +159,10 @@ def process_video():
             output_bucket = s3_config.get("output_bucket", "shortconsottotitoli")
             video_key     = s3_config["key"]
         elif video_url:
+            if s3_config:
+    region = s3_config.get("region") or "us-east-1"  # mai 'auto'
+    if region == "auto":
+        region = "us-east-1"
             if not s3:
                 return jsonify({"error": "S3 client not configured"}), 500
             s3_client     = s3
@@ -248,3 +253,4 @@ def process_video():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
