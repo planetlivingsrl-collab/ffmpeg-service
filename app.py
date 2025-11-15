@@ -17,13 +17,26 @@ app = Flask(__name__)
 R2_ENDPOINT   = os.environ.get("R2_ENDPOINT")
 R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY")
 R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY")
-R2_REGION     = os.environ.get("R2_REGION", "us-east-1")   # default corretto
+R2_REGION     = os.environ.get("R2_REGION", "us-east-1")
+
+# -------------------------------
+# Helper: normalizza region
+# -------------------------------
+def normalize_region(region):
+    """
+    R2 documenta 'auto' ma boto3 richiede una region AWS valida.
+    Convertiamo 'auto' in 'us-east-1'.
+    """
+    if not region or region == "auto":
+        return "us-east-1"
+    return region
 
 # -------------------------------
 # Factory client R2 (path-style + SigV4)
 # -------------------------------
 def make_r2_s3_client(endpoint, access_key, secret_key, region="us-east-1"):
     """Client S3 compatibile Cloudflare R2."""
+    region = normalize_region(region)
     return boto3.client(
         "s3",
         endpoint_url=endpoint,
@@ -64,9 +77,8 @@ def debug_head():
         if missing:
             return jsonify({"ok": False, "error": f"Missing fields: {missing}"}), 400
 
-region = s3_config.get("region") or "us-east-1"
-if region == "auto":  # R2 doc dice 'auto', ma boto3 richiede region AWS valida
-    region = "us-east-1"        s3_cli = make_r2_s3_client(
+        region = normalize_region(s3c.get("region"))
+        s3_cli = make_r2_s3_client(
             endpoint=s3c["endpoint"],
             access_key=s3c["accessKeyId"],
             secret_key=s3c["secretAccessKey"],
@@ -78,7 +90,14 @@ if region == "auto":  # R2 doc dice 'auto', ma boto3 richiede region AWS valida
         ), 200
 
     except ClientError as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        error_code = e.response.get("Error", {}).get("Code", "Unknown")
+        error_message = e.response.get("Error", {}).get("Message", str(e))
+        return jsonify({
+            "ok": False, 
+            "error": f"S3 error ({error_code}): {error_message}",
+            "bucket": s3c.get("bucket"),
+            "key": s3c.get("key")
+        }), 500
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -92,12 +111,20 @@ def debug_download():
         if not s3c:
             return jsonify({"ok": False, "error": "Provide s3_config"}), 400
 
+        region = normalize_region(s3c.get("region"))
         s3_cli = make_r2_s3_client(
-            s3c["endpoint"], s3c["accessKeyId"], s3c["secretAccessKey"], s3c.get("region") or "us-east-1"
+            s3c["endpoint"], s3c["accessKeyId"], s3c["secretAccessKey"], region
         )
         buf = io.BytesIO()
         s3_cli.download_fileobj(s3c["bucket"], s3c["key"], buf)
         return jsonify({"ok": True, "bytes": buf.tell()}), 200
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code", "Unknown")
+        error_message = e.response.get("Error", {}).get("Message", str(e))
+        return jsonify({
+            "ok": False, 
+            "error": f"S3 error ({error_code}): {error_message}"
+        }), 500
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -111,12 +138,20 @@ def debug_upload():
         if not s3c:
             return jsonify({"ok": False, "error": "Provide s3_config"}), 400
 
+        region = normalize_region(s3c.get("region"))
         s3_cli = make_r2_s3_client(
-            s3c["endpoint"], s3c["accessKeyId"], s3c["secretAccessKey"], s3c.get("region") or "us-east-1"
+            s3c["endpoint"], s3c["accessKeyId"], s3c["secretAccessKey"], region
         )
         target_key = s3c.get("target_key", "ping.txt")
         s3_cli.put_object(Bucket=s3c["bucket"], Key=target_key, Body=b"ping")
         return jsonify({"ok": True, "key": target_key}), 200
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code", "Unknown")
+        error_message = e.response.get("Error", {}).get("Message", str(e))
+        return jsonify({
+            "ok": False, 
+            "error": f"S3 error ({error_code}): {error_message}"
+        }), 500
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -148,7 +183,7 @@ def process_video():
 
         # --- S3 client e sorgenti ---
         if s3_config:
-            region = s3_config.get("region") or "us-east-1"  # mai 'auto'
+            region = normalize_region(s3_config.get("region"))
             s3_client = make_r2_s3_client(
                 endpoint=s3_config["endpoint"],
                 access_key=s3_config["accessKeyId"],
@@ -159,10 +194,6 @@ def process_video():
             output_bucket = s3_config.get("output_bucket", "shortconsottotitoli")
             video_key     = s3_config["key"]
         elif video_url:
-            if s3_config:
-    region = s3_config.get("region") or "us-east-1"  # mai 'auto'
-    if region == "auto":
-        region = "us-east-1"
             if not s3:
                 return jsonify({"error": "S3 client not configured"}), 500
             s3_client     = s3
@@ -175,12 +206,32 @@ def process_video():
             return jsonify({"error": "Missing video_url or s3_config"}), 400
 
         # --- Pre-check HEAD (fallisce subito se key inesistente o firma non valida) ---
-        s3_client.head_object(Bucket=input_bucket, Key=video_key)
+        try:
+            s3_client.head_object(Bucket=input_bucket, Key=video_key)
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "Unknown")
+            error_message = e.response.get("Error", {}).get("Message", str(e))
+            return jsonify({
+                "error": f"File non trovato o accesso negato: {error_code} - {error_message}",
+                "bucket": input_bucket,
+                "key": video_key
+            }), 400
 
         results = []
         with tempfile.TemporaryDirectory() as tmpdir:
             video_path = os.path.join(tmpdir, "input.mp4")
-            s3_client.download_file(input_bucket, video_key, video_path)
+            
+            # Download del video sorgente
+            try:
+                s3_client.download_file(input_bucket, video_key, video_path)
+            except ClientError as e:
+                error_code = e.response.get("Error", {}).get("Code", "Unknown")
+                error_message = e.response.get("Error", {}).get("Message", str(e))
+                return jsonify({
+                    "error": f"Errore download video: {error_code} - {error_message}",
+                    "bucket": input_bucket,
+                    "key": video_key
+                }), 500
 
             for idx, segment in enumerate(segments):
                 start    = segment["start"]
@@ -212,8 +263,6 @@ def process_video():
                     with open(srt_path, "w", encoding="utf-8") as f:
                         f.write(segment_subtitles)
 
-                    # Nota: l'argomento viene passato come singolo token; ffmpeg
-                    # accetta il filtro con path diretto.
                     filter_str = (
                         f"subtitles={srt_path}:"
                         "force_style='FontSize=24,PrimaryColour=&HFFFFFF,"
@@ -240,10 +289,15 @@ def process_video():
         return jsonify({"success": True, "results": results}), 200
 
     except ClientError as e:
-        # Errori S3 chiari (403/404/400 ecc.)
-        return jsonify({"error": f"S3 error: {e}"}), 500
+        error_code = e.response.get("Error", {}).get("Code", "Unknown")
+        error_message = e.response.get("Error", {}).get("Message", str(e))
+        return jsonify({
+            "error": f"S3 error ({error_code}): {error_message}"
+        }), 500
     except subprocess.CalledProcessError as e:
-        return jsonify({"error": f"FFmpeg error: {e.stderr.decode() if e.stderr else str(e)}"}), 500
+        return jsonify({
+            "error": f"FFmpeg error: {e.stderr.decode() if e.stderr else str(e)}"
+        }), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -253,4 +307,3 @@ def process_video():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
