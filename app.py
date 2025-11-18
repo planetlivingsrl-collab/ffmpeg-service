@@ -36,6 +36,40 @@ def make_r2_client(endpoint, access_key, secret_key, region="us-east-1"):
 def health():
     return jsonify({"status": "ok"}), 200
 
+@app.route("/generate-presigned-url", methods=["POST"])
+def generate_presigned_url():
+    try:
+        data = request.get_json()
+        bucket_name = data.get('bucket')
+        file_key = data.get('key')
+        
+        if not bucket_name or not file_key:
+            return jsonify({"error": "Missing bucket or key"}), 400
+        
+        logger.info(f"Generating presigned URL for {bucket_name}/{file_key}")
+        
+        # Usa le credenziali R2 già configurate
+        s3_client = make_r2_client(
+            R2_ENDPOINT,
+            R2_ACCESS_KEY,
+            R2_SECRET_KEY,
+            "us-east-1"
+        )
+        
+        # Genera presigned URL valido per 2 ore
+        presigned_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket_name, 'Key': file_key},
+            ExpiresIn=7200
+        )
+        
+        logger.info("Presigned URL generated successfully")
+        return jsonify({'presigned_url': presigned_url}), 200
+        
+    except Exception as e:
+        logger.error(f"Error generating presigned URL: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route("/process", methods=["POST"])
 def process_video():
     try:
@@ -131,3 +165,4 @@ Deve contenere:
 Flask==3.0.0
 boto3==1.34.0
 gunicorn==21.2.0
+
