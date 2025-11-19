@@ -247,13 +247,3 @@ def process_video():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-```
-
----
-
-## REQUIREMENTS.TXT AGGIORNATO
-```
-Flask==3.0.0
-boto3==1.34.0
-gunicorn==21.2.0
-requests==2.31.0
