@@ -4,7 +4,7 @@ import boto3
 import subprocess
 import tempfile
 import logging
-import requests
+import urllib.request
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
@@ -77,13 +77,7 @@ def process_video():
             
             logger.info("Downloading video from public URL")
             try:
-                response = requests.get(video_url, stream=True, timeout=300)
-                response.raise_for_status()
-                
-                with open(video_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                
+                urllib.request.urlretrieve(video_url, video_path)
                 logger.info(f"Download complete: {os.path.getsize(video_path)} bytes")
             except Exception as e:
                 logger.error(f"Download failed: {str(e)}")
