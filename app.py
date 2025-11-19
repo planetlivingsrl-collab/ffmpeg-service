@@ -9,26 +9,22 @@ from urllib.parse import urlparse, unquote
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Config da variabili d'ambiente
 R2_ENDPOINT = os.environ.get("R2_ENDPOINT")
 R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY")
 R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY")
 R2_REGION = os.environ.get("R2_REGION", "us-east-1")
 
 def normalize_region(region):
-    """R2 documenta 'auto' ma boto3 richiede una region AWS valida."""
     if not region or region == "auto":
         return "us-east-1"
     return region
 
 def make_r2_s3_client(endpoint, access_key, secret_key, region="us-east-1"):
-    """Client S3 compatibile Cloudflare R2."""
     region = normalize_region(region)
     return boto3.client(
         "s3",
@@ -51,6 +47,38 @@ s3 = (
 @app.get("/health")
 def health():
     return jsonify({"status": "ok"}), 200
+
+@app.post("/generate-presigned-url")
+def generate_presigned_url():
+    try:
+        data = request.get_json()
+        bucket_name = data.get('bucket')
+        file_key = data.get('key')
+        
+        if not bucket_name or not file_key:
+            return jsonify({"error": "Missing bucket or key"}), 400
+        
+        logger.info(f"Generating presigned URL for {bucket_name}/{file_key}")
+        
+        s3_client = make_r2_s3_client(
+            R2_ENDPOINT,
+            R2_ACCESS_KEY,
+            R2_SECRET_KEY,
+            R2_REGION
+        )
+        
+        presigned_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket_name, 'Key': file_key},
+            ExpiresIn=7200
+        )
+        
+        logger.info("Presigned URL generated successfully")
+        return jsonify({'presigned_url': presigned_url}), 200
+        
+    except Exception as e:
+        logger.error(f"Error generating presigned URL: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.post("/debug/head")
 def debug_head():
@@ -90,15 +118,12 @@ def debug_head():
 @app.post("/process")
 def process_video():
     try:
-        # LOG PAYLOAD RICEVUTO
         raw_data = request.get_json()
         logger.info(f"=== RAW PAYLOAD ===")
         logger.info(f"Type: {type(raw_data)}")
         logger.info(f"Content: {raw_data}")
         
-        # Parsing intelligente
         if isinstance(raw_data, dict):
-            # Se ha campo "body", estrailo
             if "body" in raw_data:
                 logger.info("Found 'body' wrapper, extracting...")
                 data = raw_data["body"]
@@ -119,14 +144,12 @@ def process_video():
         if not segments:
             return jsonify({"error": "Missing segments"}), 400
 
-        # LOG S3 CONFIG
         logger.info(f"=== S3 CONFIG ===")
         logger.info(f"Endpoint: {s3_config.get('endpoint') if s3_config else 'N/A'}")
         logger.info(f"Bucket: {s3_config.get('bucket') if s3_config else 'N/A'}")
         logger.info(f"Key: {s3_config.get('key') if s3_config else 'N/A'}")
         logger.info(f"Region: {s3_config.get('region') if s3_config else 'N/A'}")
 
-        # S3 client e sorgenti
         if s3_config:
             region = normalize_region(s3_config.get("region"))
             s3_client = make_r2_s3_client(
@@ -149,7 +172,6 @@ def process_video():
         else:
             return jsonify({"error": "Missing video_url or s3_config"}), 400
 
-        # Pre-check HEAD
         logger.info(f"=== ATTEMPTING HEAD OBJECT ===")
         logger.info(f"Bucket: {input_bucket}")
         logger.info(f"Key: {video_key}")
@@ -173,7 +195,6 @@ def process_video():
         with tempfile.TemporaryDirectory() as tmpdir:
             video_path = os.path.join(tmpdir, "input.mp4")
             
-            # Download del video sorgente
             logger.info(f"=== DOWNLOADING VIDEO ===")
             try:
                 s3_client.download_file(input_bucket, video_key, video_path)
@@ -255,38 +276,6 @@ def process_video():
     except Exception as e:
         logger.error(f"GENERAL ERROR: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
-@app.post("/generate-presigned-url")
-def generate_presigned_url():
-    try:
-        data = request.get_json()
-        bucket_name = data.get('bucket')
-        file_key = data.get('key')
-        
-        if not bucket_name or not file_key:
-            return jsonify({"error": "Missing bucket or key"}), 400
-        
-        logger.info(f"Generating presigned URL for {bucket_name}/{file_key}")
-        
-        s3_client = make_r2_s3_client(
-            R2_ENDPOINT,
-            R2_ACCESS_KEY,
-            R2_SECRET_KEY,
-            R2_REGION
-        )
-        
-        presigned_url = s3_client.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': bucket_name, 'Key': file_key},
-            ExpiresIn=7200
-        )
-        
-        logger.info("Presigned URL generated successfully")
-        return jsonify({'presigned_url': presigned_url}), 200
-        
-    except Exception as e:
-        logger.error(f"Error generating presigned URL: {str(e)}")
-        return jsonify({'error': str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
