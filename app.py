@@ -1,12 +1,10 @@
 from flask import Flask, request, jsonify
 import os
-import io
 import boto3
 import subprocess
 import tempfile
 import logging
 import requests
-from urllib.parse import urlparse, unquote
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
@@ -33,10 +31,7 @@ def make_r2_s3_client(endpoint, access_key, secret_key, region="us-east-1"):
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
         region_name=region,
-        config=Config(
-            signature_version="s3v4",
-            s3={"addressing_style": "path"}
-        ),
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
     )
 
 s3 = (
@@ -49,93 +44,16 @@ s3 = (
 def health():
     return jsonify({"status": "ok"}), 200
 
-@app.post("/generate-presigned-url")
-def generate_presigned_url():
-    try:
-        data = request.get_json()
-        bucket_name = data.get('bucket')
-        file_key = data.get('key')
-        
-        if not bucket_name or not file_key:
-            return jsonify({"error": "Missing bucket or key"}), 400
-        
-        logger.info(f"Generating presigned URL for {bucket_name}/{file_key}")
-        
-        s3_client = make_r2_s3_client(
-            R2_ENDPOINT,
-            R2_ACCESS_KEY,
-            R2_SECRET_KEY,
-            R2_REGION
-        )
-        
-        presigned_url = s3_client.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': bucket_name, 'Key': file_key},
-            ExpiresIn=7200
-        )
-        
-        logger.info("Presigned URL generated successfully")
-        return jsonify({'presigned_url': presigned_url}), 200
-        
-    except Exception as e:
-        logger.error(f"Error generating presigned URL: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-@app.post("/debug/head")
-def debug_head():
-    try:
-        payload = request.get_json() or {}
-        s3c = payload.get("s3_config", payload)
-
-        required = ["endpoint", "bucket", "key", "accessKeyId", "secretAccessKey"]
-        missing = [k for k in required if not s3c.get(k)]
-        if missing:
-            return jsonify({"ok": False, "error": f"Missing fields: {missing}"}), 400
-
-        region = normalize_region(s3c.get("region"))
-        s3_cli = make_r2_s3_client(
-            endpoint=s3c["endpoint"],
-            access_key=s3c["accessKeyId"],
-            secret_key=s3c["secretAccessKey"],
-            region=region,
-        )
-        r = s3_cli.head_object(Bucket=s3c["bucket"], Key=s3c["key"])
-        return jsonify(
-            {"ok": True, "content_length": r.get("ContentLength"), "etag": r.get("ETag")}
-        ), 200
-
-    except ClientError as e:
-        error_code = e.response.get("Error", {}).get("Code", "Unknown")
-        error_message = e.response.get("Error", {}).get("Message", str(e))
-        return jsonify({
-            "ok": False,
-            "error": f"S3 error ({error_code}): {error_message}",
-            "bucket": s3c.get("bucket"),
-            "key": s3c.get("key")
-        }), 500
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
 @app.post("/process")
 def process_video():
     try:
         raw_data = request.get_json()
-        logger.info(f"=== RAW PAYLOAD ===")
-        logger.info(f"Type: {type(raw_data)}")
-        logger.info(f"Content: {raw_data}")
+        logger.info(f"Received request")
         
         if isinstance(raw_data, dict):
-            if "body" in raw_data:
-                logger.info("Found 'body' wrapper, extracting...")
-                data = raw_data["body"]
-            else:
-                data = raw_data
+            data = raw_data.get("body", raw_data)
         else:
             data = raw_data
-
-        logger.info(f"=== PARSED DATA ===")
-        logger.info(f"Type: {type(data)}")
-        logger.info(f"Content: {data}")
 
         video_url = data.get("video_url")
         segments = data.get("segments")
@@ -151,15 +69,13 @@ def process_video():
         if not s3:
             return jsonify({"error": "S3 client not configured"}), 500
 
-        logger.info(f"=== VIDEO URL ===")
-        logger.info(f"URL: {video_url}")
-        logger.info(f"Output bucket: {output_bucket}")
+        logger.info(f"Processing video: {video_url}")
 
         results = []
         with tempfile.TemporaryDirectory() as tmpdir:
             video_path = os.path.join(tmpdir, "input.mp4")
             
-            logger.info(f"=== DOWNLOADING VIDEO FROM PUBLIC URL ===")
+            logger.info("Downloading video from public URL")
             try:
                 response = requests.get(video_url, stream=True, timeout=300)
                 response.raise_for_status()
@@ -168,13 +84,10 @@ def process_video():
                     for chunk in response.iter_content(chunk_size=8192):
                         f.write(chunk)
                 
-                logger.info(f"Download SUCCESS: {os.path.getsize(video_path)} bytes")
+                logger.info(f"Download complete: {os.path.getsize(video_path)} bytes")
             except Exception as e:
-                logger.error(f"Download FAILED: {str(e)}")
-                return jsonify({
-                    "error": f"Errore download video: {str(e)}",
-                    "video_url": video_url
-                }), 500
+                logger.error(f"Download failed: {str(e)}")
+                return jsonify({"error": f"Download error: {str(e)}", "video_url": video_url}), 500
 
             for idx, segment in enumerate(segments):
                 start = segment["start"]
@@ -228,20 +141,8 @@ def process_video():
 
         return jsonify({"success": True, "results": results}), 200
 
-    except ClientError as e:
-        error_code = e.response.get("Error", {}).get("Code", "Unknown")
-        error_message = e.response.get("Error", {}).get("Message", str(e))
-        logger.error(f"S3 ERROR: {error_code} - {error_message}")
-        return jsonify({
-            "error": f"S3 error ({error_code}): {error_message}"
-        }), 500
-    except subprocess.CalledProcessError as e:
-        logger.error(f"FFMPEG ERROR: {e.stderr.decode() if e.stderr else str(e)}")
-        return jsonify({
-            "error": f"FFmpeg error: {e.stderr.decode() if e.stderr else str(e)}"
-        }), 500
     except Exception as e:
-        logger.error(f"GENERAL ERROR: {str(e)}")
+        logger.error(f"Error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
