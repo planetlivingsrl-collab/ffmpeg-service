@@ -44,6 +44,14 @@ s3 = (
 def health():
     return jsonify({"status": "ok"}), 200
 
+def format_ass_time(seconds):
+    """Format seconds as H:MM:SS.cc for ASS"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    centis = int((seconds % 1) * 100)
+    return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
+
 def create_karaoke_ass(words, segment_start, output_path):
     """Create ASS subtitle file with karaoke effect (word highlighting)"""
     
@@ -101,14 +109,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(ass_content)
 
-def format_ass_time(seconds):
-    """Format seconds as H:MM:SS.cc for ASS"""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    centis = int((seconds % 1) * 100)
-    return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
-
 @app.post("/process")
 def process_video():
     try:
@@ -124,6 +124,7 @@ def process_video():
         segments = data.get("segments")
         subtitles_data = data.get("subtitles")
         output_bucket = data.get("output_bucket", "shortconsottotitoli")
+        segment_idx = data.get("segment_index", 0)
 
         if not segments:
             return jsonify({"error": "Missing segments"}), 400
@@ -135,6 +136,7 @@ def process_video():
             return jsonify({"error": "S3 client not configured"}), 500
 
         logger.info(f"Processing video: {video_url}")
+        logger.info(f"Processing segment index: {segment_idx}")
 
         results = []
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -148,11 +150,11 @@ def process_video():
                 logger.error(f"Download failed: {str(e)}")
                 return jsonify({"error": f"Download error: {str(e)}", "video_url": video_url}), 500
 
-            # Get words from subtitles_data for karaoke effect
-            # We need the full words array from n8n
+            # Get words from n8n for karaoke effect
             all_words = data.get("words", [])
 
-            for idx, segment in enumerate(segments):
+            for segment in segments:
+                logger.info(f"Processing segment {segment_idx}")
                 start = segment["start"]
                 end = segment["end"]
                 duration = end - start
@@ -160,8 +162,8 @@ def process_video():
                 # Get words for this segment
                 segment_words = [w for w in all_words if (w['start']/1000.0) >= start and (w['end']/1000.0) <= end]
 
-                segment_path = os.path.join(tmpdir, f"segment_{idx}.mp4")
-                output_path = os.path.join(tmpdir, f"output_{idx}.mp4")
+                segment_path = os.path.join(tmpdir, f"segment_{segment_idx}.mp4")
+                output_path = os.path.join(tmpdir, f"output_{segment_idx}.mp4")
 
                 # Cut segment
                 cut_cmd = [
@@ -173,7 +175,7 @@ def process_video():
 
                 if segment_words:
                     # Create karaoke ASS file
-                    ass_path = os.path.join(tmpdir, f"segment_{idx}.ass")
+                    ass_path = os.path.join(tmpdir, f"segment_{segment_idx}.ass")
                     create_karaoke_ass(segment_words, start, ass_path)
 
                     # Apply subtitles with ASS
@@ -187,19 +189,26 @@ def process_video():
                     output_path = segment_path
 
                 filename = video_url.split('/')[-1]
-                output_key = f"segment_{idx}_{filename}"
+                output_key = f"segment_{segment_idx}_{filename}"
+                
+                logger.info(f"Uploading segment {segment_idx} to R2 as {output_key}")
                 s3.upload_file(output_path, output_bucket, output_key)
 
                 results.append({
-                    "segment": idx,
+                    "segment": segment_idx,
                     "url": f"https://cdn.vvcontent.com/{output_key}",
                     "duration": duration
                 })
+                
+                logger.info(f"Segment {segment_idx} completed")
 
+        logger.info("All segments processed successfully")
         return jsonify({"success": True, "results": results}), 200
 
     except Exception as e:
         logger.error(f"Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
