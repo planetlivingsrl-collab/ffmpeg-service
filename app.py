@@ -44,6 +44,71 @@ s3 = (
 def health():
     return jsonify({"status": "ok"}), 200
 
+def create_karaoke_ass(words, segment_start, output_path):
+    """Create ASS subtitle file with karaoke effect (word highlighting)"""
+    
+    # ASS header with styling
+    ass_content = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,48,&H00FFFFFF,&H00FFFF00,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,10,10,80,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    
+    # Group words into chunks of 3-4 for readability
+    chunk_size = 4
+    chunks = []
+    for i in range(0, len(words), chunk_size):
+        chunk_words = words[i:i + chunk_size]
+        chunks.append(chunk_words)
+    
+    # Create dialogue lines with karaoke effect
+    for chunk in chunks:
+        if not chunk:
+            continue
+            
+        # Calculate timing for this chunk
+        start_time = (chunk[0]['start'] / 1000.0) - segment_start
+        end_time = (chunk[-1]['end'] / 1000.0) - segment_start
+        
+        # Format times for ASS (H:MM:SS.cc)
+        start_ass = format_ass_time(max(0, start_time))
+        end_ass = format_ass_time(max(0, end_time))
+        
+        # Build karaoke text with timing for each word
+        karaoke_text = ""
+        for word in chunk:
+            word_start = (word['start'] / 1000.0) - segment_start
+            word_duration = ((word['end'] - word['start']) / 1000.0)
+            
+            # Convert duration to centiseconds for ASS karaoke effect
+            duration_cs = int(word_duration * 100)
+            
+            # Add karaoke effect: \k<duration> highlights the word
+            karaoke_text += f"{{\\k{duration_cs}}}{word['text']} "
+        
+        # Add dialogue line
+        ass_content += f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{karaoke_text.strip()}\n"
+    
+    # Write to file
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(ass_content)
+
+def format_ass_time(seconds):
+    """Format seconds as H:MM:SS.cc for ASS"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    centis = int((seconds % 1) * 100)
+    return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
+
 @app.post("/process")
 def process_video():
     try:
@@ -83,21 +148,22 @@ def process_video():
                 logger.error(f"Download failed: {str(e)}")
                 return jsonify({"error": f"Download error: {str(e)}", "video_url": video_url}), 500
 
+            # Get words from subtitles_data for karaoke effect
+            # We need the full words array from n8n
+            all_words = data.get("words", [])
+
             for idx, segment in enumerate(segments):
                 start = segment["start"]
                 end = segment["end"]
                 duration = end - start
 
-                segment_subtitles = None
-                if subtitles_data:
-                    for sub_entry in subtitles_data:
-                        if sub_entry.get("segment_index") == idx:
-                            segment_subtitles = sub_entry.get("subtitle_srt")
-                            break
+                # Get words for this segment
+                segment_words = [w for w in all_words if (w['start']/1000.0) >= start and (w['end']/1000.0) <= end]
 
                 segment_path = os.path.join(tmpdir, f"segment_{idx}.mp4")
                 output_path = os.path.join(tmpdir, f"output_{idx}.mp4")
 
+                # Cut segment
                 cut_cmd = [
                     "ffmpeg", "-y", "-i", video_path,
                     "-ss", str(start), "-t", str(duration),
@@ -105,19 +171,16 @@ def process_video():
                 ]
                 subprocess.run(cut_cmd, check=True, capture_output=True)
 
-                if segment_subtitles:
-                    srt_path = os.path.join(tmpdir, f"segment_{idx}.srt")
-                    with open(srt_path, "w", encoding="utf-8") as f:
-                        f.write(segment_subtitles)
+                if segment_words:
+                    # Create karaoke ASS file
+                    ass_path = os.path.join(tmpdir, f"segment_{idx}.ass")
+                    create_karaoke_ass(segment_words, start, ass_path)
 
-                    filter_str = (
-                        f"subtitles={srt_path}:"
-                        "force_style='FontSize=24,PrimaryColour=&HFFFFFF,"
-                        "OutlineColour=&H000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=20'"
-                    )
+                    # Apply subtitles with ASS
                     subtitle_cmd = [
                         "ffmpeg", "-y", "-i", segment_path,
-                        "-vf", filter_str, "-c:a", "copy", output_path
+                        "-vf", f"ass={ass_path}",
+                        "-c:a", "copy", output_path
                     ]
                     subprocess.run(subtitle_cmd, check=True, capture_output=True)
                 else:
