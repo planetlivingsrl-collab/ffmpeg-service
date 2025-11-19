@@ -5,6 +5,7 @@ import boto3
 import subprocess
 import tempfile
 import logging
+import requests
 from urllib.parse import urlparse, unquote
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -136,77 +137,43 @@ def process_video():
         logger.info(f"Type: {type(data)}")
         logger.info(f"Content: {data}")
 
-        s3_config = data.get("s3_config")
         video_url = data.get("video_url")
         segments = data.get("segments")
         subtitles_data = data.get("subtitles")
+        output_bucket = data.get("output_bucket", "shortconsottotitoli")
 
         if not segments:
             return jsonify({"error": "Missing segments"}), 400
-
-        logger.info(f"=== S3 CONFIG ===")
-        logger.info(f"Endpoint: {s3_config.get('endpoint') if s3_config else 'N/A'}")
-        logger.info(f"Bucket: {s3_config.get('bucket') if s3_config else 'N/A'}")
-        logger.info(f"Key: {s3_config.get('key') if s3_config else 'N/A'}")
-        logger.info(f"Region: {s3_config.get('region') if s3_config else 'N/A'}")
-
-        if s3_config:
-            region = normalize_region(s3_config.get("region"))
-            s3_client = make_r2_s3_client(
-                endpoint=s3_config["endpoint"],
-                access_key=s3_config["accessKeyId"],
-                secret_key=s3_config["secretAccessKey"],
-                region=region,
-            )
-            input_bucket = s3_config["bucket"]
-            output_bucket = s3_config.get("output_bucket", "shortconsottotitoli")
-            video_key = s3_config["key"]
-        elif video_url:
-            if not s3:
-                return jsonify({"error": "S3 client not configured"}), 500
-            s3_client = s3
-            input_bucket = os.environ.get("R2_INPUT_BUCKET", "videoliving")
-            output_bucket = os.environ.get("R2_OUTPUT_BUCKET", "shortconsottotitoli")
-            path = urlparse(video_url).path
-            video_key = unquote(path.lstrip("/").split("/")[-1])
-        else:
-            return jsonify({"error": "Missing video_url or s3_config"}), 400
-
-        logger.info(f"=== ATTEMPTING HEAD OBJECT ===")
-        logger.info(f"Bucket: {input_bucket}")
-        logger.info(f"Key: {video_key}")
         
-        try:
-            head_response = s3_client.head_object(Bucket=input_bucket, Key=video_key)
-            logger.info(f"HEAD SUCCESS: {head_response.get('ContentLength')} bytes")
-        except ClientError as e:
-            error_code = e.response.get("Error", {}).get("Code", "Unknown")
-            error_message = e.response.get("Error", {}).get("Message", str(e))
-            logger.error(f"HEAD FAILED: {error_code} - {error_message}")
-            logger.error(f"Full error response: {e.response}")
-            return jsonify({
-                "error": f"File non trovato o accesso negato: {error_code} - {error_message}",
-                "bucket": input_bucket,
-                "key": video_key,
-                "endpoint": s3_config.get("endpoint") if s3_config else "N/A"
-            }), 400
+        if not video_url:
+            return jsonify({"error": "Missing video_url"}), 400
+
+        if not s3:
+            return jsonify({"error": "S3 client not configured"}), 500
+
+        logger.info(f"=== VIDEO URL ===")
+        logger.info(f"URL: {video_url}")
+        logger.info(f"Output bucket: {output_bucket}")
 
         results = []
         with tempfile.TemporaryDirectory() as tmpdir:
             video_path = os.path.join(tmpdir, "input.mp4")
             
-            logger.info(f"=== DOWNLOADING VIDEO ===")
+            logger.info(f"=== DOWNLOADING VIDEO FROM PUBLIC URL ===")
             try:
-                s3_client.download_file(input_bucket, video_key, video_path)
+                response = requests.get(video_url, stream=True, timeout=300)
+                response.raise_for_status()
+                
+                with open(video_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                
                 logger.info(f"Download SUCCESS: {os.path.getsize(video_path)} bytes")
-            except ClientError as e:
-                error_code = e.response.get("Error", {}).get("Code", "Unknown")
-                error_message = e.response.get("Error", {}).get("Message", str(e))
-                logger.error(f"Download FAILED: {error_code} - {error_message}")
+            except Exception as e:
+                logger.error(f"Download FAILED: {str(e)}")
                 return jsonify({
-                    "error": f"Errore download video: {error_code} - {error_message}",
-                    "bucket": input_bucket,
-                    "key": video_key
+                    "error": f"Errore download video: {str(e)}",
+                    "video_url": video_url
                 }), 500
 
             for idx, segment in enumerate(segments):
@@ -249,13 +216,13 @@ def process_video():
                 else:
                     output_path = segment_path
 
-                output_key = f"segment_{idx}_{os.path.basename(video_key)}"
-                s3_client.upload_file(output_path, output_bucket, output_key)
+                filename = video_url.split('/')[-1]
+                output_key = f"segment_{idx}_{filename}"
+                s3.upload_file(output_path, output_bucket, output_key)
 
-                base = s3_config["endpoint"] if s3_config else R2_ENDPOINT
                 results.append({
                     "segment": idx,
-                    "url": f"{base}/{output_bucket}/{output_key}",
+                    "url": f"https://cdn.vvcontent.com/{output_key}",
                     "duration": duration
                 })
 
@@ -280,3 +247,13 @@ def process_video():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+```
+
+---
+
+## REQUIREMENTS.TXT AGGIORNATO
+```
+Flask==3.0.0
+boto3==1.34.0
+gunicorn==21.2.0
+requests==2.31.0
