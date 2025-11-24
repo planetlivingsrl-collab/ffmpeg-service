@@ -124,8 +124,9 @@ def process_video():
         segments = data.get("segments")
         subtitles_data = data.get("subtitles")
         output_bucket = data.get("output_bucket", "shortconsottotitoli")
+        logger.info(f"RECEIVED DATA: {data}")
         segment_idx = data.get("segment_index", 0)
-
+        logger.info(f"EXTRACTED segment_index: {segment_idx} (type: {type(segment_idx)})")
         if not segments:
             return jsonify({"error": "Missing segments"}), 400
         
@@ -214,3 +215,4 @@ def process_video():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
