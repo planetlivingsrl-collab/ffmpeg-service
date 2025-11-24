@@ -124,9 +124,16 @@ def process_video():
         segments = data.get("segments")
         subtitles_data = data.get("subtitles")
         output_bucket = data.get("output_bucket", "shortconsottotitoli")
+        
         logger.info(f"RECEIVED DATA: {data}")
         segment_idx = data.get("segment_index", 0)
+        
+        # Converti segment_idx in intero se è stringa
+        if isinstance(segment_idx, str):
+            segment_idx = int(segment_idx)
+        
         logger.info(f"EXTRACTED segment_index: {segment_idx} (type: {type(segment_idx)})")
+        
         if not segments:
             return jsonify({"error": "Missing segments"}), 400
         
@@ -135,6 +142,13 @@ def process_video():
 
         if not s3:
             return jsonify({"error": "S3 client not configured"}), 500
+
+        # Processa solo il segmento specifico richiesto
+        if segment_idx >= len(segments):
+            return jsonify({"error": f"segment_index {segment_idx} out of range"}), 400
+        
+        target_segment = segments[segment_idx]
+        segments_to_process = [target_segment]
 
         logger.info(f"Processing video: {video_url}")
         logger.info(f"Processing segment index: {segment_idx}")
@@ -151,10 +165,9 @@ def process_video():
                 logger.error(f"Download failed: {str(e)}")
                 return jsonify({"error": f"Download error: {str(e)}", "video_url": video_url}), 500
 
-            # Get words from n8n for karaoke effect
             all_words = data.get("words", [])
 
-            for segment in segments:
+            for segment in segments_to_process:
                 logger.info(f"Processing segment {segment_idx}")
                 start = segment["start"]
                 end = segment["end"]
@@ -215,4 +228,3 @@ def process_video():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
