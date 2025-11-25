@@ -175,7 +175,12 @@ def process_video():
 
                 # Get words for this segment
                 segment_words = [w for w in all_words if (w['start']/1000.0) >= start and (w['end']/1000.0) <= end]
-
+                logger.info(f"Total words received: {len(all_words)}")
+                logger.info(f"Segment start: {start}, end: {end}")
+                logger.info(f"Filtered segment_words: {len(segment_words)}")
+                if len(segment_words) > 0:
+                logger.info(f"First word: start={segment_words[0]['start']}, end={segment_words[0]['end']}")
+                
                 segment_path = os.path.join(tmpdir, f"segment_{segment_idx}.mp4")
                 output_path = os.path.join(tmpdir, f"output_{segment_idx}.mp4")
 
@@ -228,3 +233,4 @@ def process_video():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
