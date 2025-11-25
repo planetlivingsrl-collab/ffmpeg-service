@@ -52,6 +52,15 @@ def format_ass_time(seconds):
     centis = int((seconds % 1) * 100)
     return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
 
+def format_srt_time(milliseconds):
+    """Converti millisecondi in formato SRT (HH:MM:SS,mmm)"""
+    seconds = milliseconds / 1000
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    millis = int((seconds % 1) * 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
 def create_karaoke_ass(words, segment_start, output_path):
     """Create ASS subtitle file with karaoke effect (word highlighting)"""
     
@@ -179,7 +188,7 @@ def process_video():
                 logger.info(f"Segment start: {start}, end: {end}")
                 logger.info(f"Filtered segment_words: {len(segment_words)}")
                 if len(segment_words) > 0:
-                logger.info(f"First word: start={segment_words[0]['start']}, end={segment_words[0]['end']}")
+                    logger.info(f"First word: start={segment_words[0]['start']}, end={segment_words[0]['end']}")
                 
                 segment_path = os.path.join(tmpdir, f"segment_{segment_idx}.mp4")
                 output_path = os.path.join(tmpdir, f"output_{segment_idx}.mp4")
@@ -230,7 +239,78 @@ def process_video():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+@app.post("/generate_srt")
+def generate_srt():
+    try:
+        raw_data = request.get_json()
+        logger.info(f"Received SRT generation request")
+        
+        if isinstance(raw_data, dict):
+            data = raw_data.get("body", raw_data)
+        else:
+            data = raw_data
+
+        words = data.get("words", [])
+        video_url = data.get("video_url", "")
+        output_bucket = data.get("output_bucket", "shortconsottotitoli")
+        
+        if not words:
+            return jsonify({"error": "Missing words"}), 400
+
+        if not s3:
+            return jsonify({"error": "S3 client not configured"}), 500
+
+        # Genera il file SRT
+        srt_content = ""
+        chunk_size = 4  # Parole per sottotitolo
+        subtitle_index = 1
+        
+        for i in range(0, len(words), chunk_size):
+            chunk = words[i:i + chunk_size]
+            if not chunk:
+                continue
+            
+            start_ms = chunk[0]['start']
+            end_ms = chunk[-1]['end']
+            
+            # Converti millisecondi in formato SRT (HH:MM:SS,mmm)
+            start_time = format_srt_time(start_ms)
+            end_time = format_srt_time(end_ms)
+            
+            # Testo del sottotitolo
+            text = " ".join([w['text'] for w in chunk])
+            
+            srt_content += f"{subtitle_index}\n"
+            srt_content += f"{start_time} --> {end_time}\n"
+            srt_content += f"{text}\n\n"
+            
+            subtitle_index += 1
+        
+        # Salva su R2
+        filename = video_url.split('/')[-1].replace('.mp4', '.srt')
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.srt', delete=False, encoding='utf-8') as tmp:
+            tmp.write(srt_content)
+            tmp_path = tmp.name
+        
+        try:
+            s3.upload_file(tmp_path, output_bucket, filename)
+            logger.info(f"SRT uploaded to R2 as {filename}")
+        finally:
+            os.unlink(tmp_path)
+        
+        return jsonify({
+            "success": True,
+            "srt_url": f"https://cdn.vvcontent.com/{filename}",
+            "filename": filename
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error generating SRT: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
