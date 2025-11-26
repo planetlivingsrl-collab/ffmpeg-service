@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import logging
 import urllib.request
+import time
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
@@ -251,7 +252,7 @@ def generate_srt():
             data = raw_data
 
         words = data.get("words", [])
-        video_url = data.get("video_url", "")
+        video_url = data.get("video_url", None)
         output_bucket = data.get("output_bucket", "shortconsottotitoli")
         
         if not words:
@@ -286,8 +287,11 @@ def generate_srt():
             
             subtitle_index += 1
         
-        # Salva su R2
-        filename = video_url.split('/')[-1].replace('.mp4', '.srt')
+        # Genera nome file da video_url se presente, altrimenti usa timestamp
+        if video_url:
+            filename = video_url.split('/')[-1].replace('.mp4', '.srt')
+        else:
+            filename = f"subtitles_{int(time.time())}.srt"
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.srt', delete=False, encoding='utf-8') as tmp:
             tmp.write(srt_content)
