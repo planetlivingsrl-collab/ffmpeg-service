@@ -6,6 +6,8 @@ import tempfile
 import logging
 import urllib.request
 import time
+import dropbox
+from dropbox.exceptions import ApiError
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
@@ -18,6 +20,7 @@ R2_ENDPOINT = os.environ.get("R2_ENDPOINT")
 R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY")
 R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY")
 R2_REGION = os.environ.get("R2_REGION", "us-east-1")
+DROPBOX_ACCESS_TOKEN = os.environ.get("DROPBOX_ACCESS_TOKEN")
 
 def normalize_region(region):
     if not region or region == "auto":
@@ -40,6 +43,24 @@ s3 = (
     if R2_ENDPOINT and R2_ACCESS_KEY and R2_SECRET_KEY
     else None
 )
+
+dbx = dropbox.Dropbox(DROPBOX_ACCESS_TOKEN) if DROPBOX_ACCESS_TOKEN else None
+
+def upload_to_dropbox(file_path, dropbox_path):
+    """Upload file to Dropbox"""
+    if not dbx:
+        logger.warning("Dropbox client not configured, skipping upload")
+        return None
+    
+    try:
+        with open(file_path, 'rb') as f:
+            logger.info(f"Uploading to Dropbox: {dropbox_path}")
+            dbx.files_upload(f.read(), dropbox_path, mode=dropbox.files.WriteMode.overwrite)
+            logger.info(f"Dropbox upload successful: {dropbox_path}")
+            return dropbox_path
+    except ApiError as e:
+        logger.error(f"Dropbox upload failed: {str(e)}")
+        return None
 
 @app.get("/health")
 def health():
@@ -163,6 +184,10 @@ def process_video():
         logger.info(f"Processing video: {video_url}")
         logger.info(f"Processing segment index: {segment_idx}")
 
+        # Estrai nome video base per creare la cartella Dropbox
+        base_filename = video_url.split('/')[-1].replace('.mp4', '')
+        dropbox_folder = f"/VideoProcessing/{base_filename}"
+
         results = []
         with tempfile.TemporaryDirectory() as tmpdir:
             video_path = os.path.join(tmpdir, "input.mp4")
@@ -220,12 +245,18 @@ def process_video():
                 filename = video_url.split('/')[-1]
                 output_key = f"segment_{segment_idx}_{filename}"
                 
+                # Upload to R2
                 logger.info(f"Uploading segment {segment_idx} to R2 as {output_key}")
                 s3.upload_file(output_path, output_bucket, output_key)
+
+                # Upload to Dropbox
+                dropbox_path = f"{dropbox_folder}/segment_{segment_idx}_{filename}"
+                dropbox_result = upload_to_dropbox(output_path, dropbox_path)
 
                 results.append({
                     "segment": segment_idx,
                     "url": f"https://cdn.vvcontent.com/{output_key}",
+                    "dropbox_path": dropbox_result,
                     "duration": duration
                 })
                 
@@ -290,22 +321,31 @@ def generate_srt():
         # Genera nome file da video_url se presente, altrimenti usa timestamp
         if video_url:
             filename = video_url.split('/')[-1].replace('.mp4', '.srt')
+            base_filename = video_url.split('/')[-1].replace('.mp4', '')
+            dropbox_folder = f"/VideoProcessing/{base_filename}"
         else:
             filename = f"subtitles_{int(time.time())}.srt"
+            dropbox_folder = "/VideoProcessing/Unknown"
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.srt', delete=False, encoding='utf-8') as tmp:
             tmp.write(srt_content)
             tmp_path = tmp.name
         
         try:
+            # Upload to R2
             s3.upload_file(tmp_path, output_bucket, filename)
             logger.info(f"SRT uploaded to R2 as {filename}")
+            
+            # Upload to Dropbox
+            dropbox_path = f"{dropbox_folder}/{filename}"
+            dropbox_result = upload_to_dropbox(tmp_path, dropbox_path)
         finally:
             os.unlink(tmp_path)
         
         return jsonify({
             "success": True,
             "srt_url": f"https://cdn.vvcontent.com/{filename}",
+            "dropbox_path": dropbox_result,
             "filename": filename
         }), 200
 
@@ -318,3 +358,10 @@ def generate_srt():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+```
+
+**IMPORTANTE: Aggiungi la libreria Dropbox**
+
+Devi anche aggiornare il file `requirements.txt` su Render. Aggiungici questa riga:
+```
+dropbox==11.36.2
