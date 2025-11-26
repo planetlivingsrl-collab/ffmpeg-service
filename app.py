@@ -358,10 +358,4 @@ def generate_srt():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-```
 
-**IMPORTANTE: Aggiungi la libreria Dropbox**
-
-Devi anche aggiornare il file `requirements.txt` su Render. Aggiungici questa riga:
-```
-dropbox==11.36.2
