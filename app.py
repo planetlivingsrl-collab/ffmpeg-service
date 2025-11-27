@@ -102,7 +102,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial Black,75,&H00FFFFFF,&H000000FF,&H00000000,&HC0000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
+Style: Default,Arial Black,75,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -133,12 +133,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             is_keyword = word_clean in keywords_lower or word_lower in keywords_lower
             
             if is_keyword:
-                text_parts.append(f"{{\\c&H00FF00&\\b1}}{word_text}{{\\c&HFFFFFF&\\b0}}")
+                # Verde lime brillante per keywords
+                text_parts.append(f"{{\\c&H00FF00&}}{word_text}{{\\c&HFFFFFF&}}")
             else:
+                # Bianco per parole normali
                 text_parts.append(word_text)
         
         subtitle_text = " ".join(text_parts)
-        dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{{\\pos(540,1770)\\an2\\bord5\\3c&H000000&\\blur2\\p6}}m 0 0 b 10 -10 20 -10 30 0 l 1050 0 b 1060 -10 1070 -10 1080 0 l 1080 140 b 1070 150 1060 150 1050 140 l 30 140 b 20 150 10 150 0 140{{\\p0}}{{\\pos(540,1770)\\an2\\bord0\\c&H8040E0&}}{{\\alpha&H50}}{{\\pos(540,1770)\\an2\\bord5\\3c&H000000&}}{subtitle_text}\n"
+        
+        # Dialogue semplice con solo il testo
+        dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{subtitle_text}\n"
         
         ass_content += dialogue_line
     
@@ -415,4 +419,3 @@ def generate_srt():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
