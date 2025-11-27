@@ -8,6 +8,7 @@ import urllib.request
 import time
 import re
 import json
+import requests
 import dropbox
 from dropbox.exceptions import ApiError
 from botocore.config import Config
@@ -147,8 +148,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 @app.post("/identify_keywords")
 def identify_keywords():
     try:
-        from anthropic import Anthropic
-        
         raw_data = request.get_json()
         logger.info("Received keyword identification request")
         
@@ -166,20 +165,38 @@ def identify_keywords():
         if not api_key:
             return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
         
-        client = Anthropic(api_key=api_key)
+        # Chiamata diretta API Anthropic usando requests
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        }
         
-        message = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=500,
-            messages=[{
+        payload = {
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 500,
+            "messages": [{
                 "role": "user",
                 "content": f"Analizza questo testo in italiano e identifica le 8-12 PAROLE CHIAVE più importanti ed emozionali (nomi propri, numeri, verbi d'azione, concetti chiave, parole emotive). Rispondi SOLO con un array JSON di parole, tutto minuscolo, senza punteggiatura.\n\nTesto: {full_text}\n\nRispondi nel formato: [\"parola1\", \"parola2\", \"parola3\"]"
             }]
+        }
+        
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers=headers,
+            json=payload,
+            timeout=30
         )
         
-        response_text = message.content[0].text
+        if response.status_code != 200:
+            logger.error(f"Anthropic API error: {response.status_code} - {response.text}")
+            return jsonify({"error": f"API error: {response.status_code}"}), 500
+        
+        response_data = response.json()
+        response_text = response_data["content"][0]["text"]
         logger.info(f"AI Response: {response_text}")
         
+        # Estrai array JSON
         keywords_match = re.search(r'\[.*?\]', response_text, re.DOTALL)
         keywords = []
         
