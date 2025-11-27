@@ -58,8 +58,8 @@ def upload_to_dropbox(file_path, dropbox_path):
             dbx.files_upload(f.read(), dropbox_path, mode=dropbox.files.WriteMode.overwrite)
             logger.info(f"Dropbox upload successful: {dropbox_path}")
             return dropbox_path
-    except ApiError as e:
-        logger.error(f"Dropbox upload failed: {str(e)}")
+    except Exception as e:
+        logger.error(f"Dropbox error (continuing anyway): {str(e)}")
         return None
 
 @app.get("/health")
@@ -83,10 +83,16 @@ def format_srt_time(milliseconds):
     millis = int((seconds % 1) * 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
-def create_karaoke_ass(words, segment_start, output_path):
-    """Create ASS subtitle file with karaoke effect (word highlighting)"""
+def create_copernicus_ass(words, segment_start, output_path, keywords=None):
+    """Create ASS subtitle file with Copernicus style (highlighted keywords in green)"""
     
-    # ASS header with styling
+    if keywords is None:
+        keywords = []
+    
+    # Converti keywords in lowercase per matching case-insensitive
+    keywords_lower = [k.lower().strip() for k in keywords]
+    
+    # ASS header con stile Copernicus
     ass_content = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -95,48 +101,55 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,48,&H00FFFFFF,&H00FFFF00,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,10,10,80,1
+Style: Default,Arial Black,75,&H00FFFFFF,&H000000FF,&H00000000,&HC0000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     
-    # Group words into chunks of 3-4 for readability
-    chunk_size = 4
+    # Raggruppa parole in chunks di 2-3
+    chunk_size = 2
     chunks = []
     for i in range(0, len(words), chunk_size):
         chunk_words = words[i:i + chunk_size]
         chunks.append(chunk_words)
     
-    # Create dialogue lines with karaoke effect
     for chunk in chunks:
         if not chunk:
             continue
             
-        # Calculate timing for this chunk
         start_time = (chunk[0]['start'] / 1000.0) - segment_start
         end_time = (chunk[-1]['end'] / 1000.0) - segment_start
         
-        # Format times for ASS (H:MM:SS.cc)
         start_ass = format_ass_time(max(0, start_time))
         end_ass = format_ass_time(max(0, end_time))
         
-        # Build karaoke text with timing for each word
-        karaoke_text = ""
+        # Crea testo con colori per keywords
+        text_parts = []
         for word in chunk:
-            word_start = (word['start'] / 1000.0) - segment_start
-            word_duration = ((word['end'] - word['start']) / 1000.0)
+            word_text = word['text'].strip().upper()
+            word_lower = word['text'].strip().lower()
             
-            # Convert duration to centiseconds for ASS karaoke effect
-            duration_cs = int(word_duration * 100)
+            # Rimuovi punteggiatura per matching
+            word_clean = ''.join(c for c in word_lower if c.isalnum())
             
-            # Add karaoke effect: \k<duration> highlights the word
-            karaoke_text += f"{{\\k{duration_cs}}}{word['text']} "
+            # Check se è una keyword
+            is_keyword = word_clean in keywords_lower or word_lower in keywords_lower
+            
+            if is_keyword:
+                # Verde lime per keywords
+                text_parts.append(f"{{\\c&H00FF00&\\b1}}{word_text}{{\\c&HFFFFFF&\\b0}}")
+            else:
+                # Bianco per parole normali
+                text_parts.append(word_text)
         
-        # Add dialogue line
-        ass_content += f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{karaoke_text.strip()}\n"
+        subtitle_text = " ".join(text_parts)
+        
+        # Box viola con bordo nero spesso
+        dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{{\\pos(540,1770)\\an2\\bord5\\3c&H000000&\\blur2\\p6}}m 0 0 b 10 -10 20 -10 30 0 l 1050 0 b 1060 -10 1070 -10 1080 0 l 1080 140 b 1070 150 1060 150 1050 140 l 30 140 b 20 150 10 150 0 140{{\\p0}}{{\\pos(540,1770)\\an2\\bord0\\c&H8040E0&}}{{\\alpha&H50}}{{\\pos(540,1770)\\an2\\bord5\\3c&H000000&}}{subtitle_text}\n"
+        
+        ass_content += dialogue_line
     
-    # Write to file
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(ass_content)
 
@@ -155,15 +168,15 @@ def process_video():
         segments = data.get("segments")
         subtitles_data = data.get("subtitles")
         output_bucket = data.get("output_bucket", "shortconsottotitoli")
+        keywords = data.get("keywords", [])
         
-        logger.info(f"RECEIVED DATA: {data}")
+        logger.info(f"RECEIVED DATA with {len(keywords)} keywords: {keywords}")
         segment_idx = data.get("segment_index", 0)
         
-        # Converti segment_idx in intero se è stringa
         if isinstance(segment_idx, str):
             segment_idx = int(segment_idx)
         
-        logger.info(f"EXTRACTED segment_index: {segment_idx} (type: {type(segment_idx)})")
+        logger.info(f"EXTRACTED segment_index: {segment_idx}")
         
         if not segments:
             return jsonify({"error": "Missing segments"}), 400
@@ -174,7 +187,6 @@ def process_video():
         if not s3:
             return jsonify({"error": "S3 client not configured"}), 500
 
-        # Processa solo il segmento specifico richiesto
         if segment_idx >= len(segments):
             return jsonify({"error": f"segment_index {segment_idx} out of range"}), 400
         
@@ -182,9 +194,7 @@ def process_video():
         segments_to_process = [target_segment]
 
         logger.info(f"Processing video: {video_url}")
-        logger.info(f"Processing segment index: {segment_idx}")
 
-        # Estrai nome video base per creare la cartella Dropbox
         base_filename = video_url.split('/')[-1].replace('.mp4', '')
         dropbox_folder = f"/VideoProcessing/{base_filename}"
 
@@ -208,18 +218,12 @@ def process_video():
                 end = segment["end"]
                 duration = end - start
 
-                # Get words for this segment
                 segment_words = [w for w in all_words if (w['start']/1000.0) >= start and (w['end']/1000.0) <= end]
-                logger.info(f"Total words received: {len(all_words)}")
-                logger.info(f"Segment start: {start}, end: {end}")
                 logger.info(f"Filtered segment_words: {len(segment_words)}")
-                if len(segment_words) > 0:
-                    logger.info(f"First word: start={segment_words[0]['start']}, end={segment_words[0]['end']}")
                 
                 segment_path = os.path.join(tmpdir, f"segment_{segment_idx}.mp4")
                 output_path = os.path.join(tmpdir, f"output_{segment_idx}.mp4")
 
-                # Cut segment
                 cut_cmd = [
                     "ffmpeg", "-y", "-i", video_path,
                     "-ss", str(start), "-t", str(duration),
@@ -228,11 +232,9 @@ def process_video():
                 subprocess.run(cut_cmd, check=True, capture_output=True)
 
                 if segment_words:
-                    # Create karaoke ASS file
                     ass_path = os.path.join(tmpdir, f"segment_{segment_idx}.ass")
-                    create_karaoke_ass(segment_words, start, ass_path)
+                    create_copernicus_ass(segment_words, start, ass_path, keywords)
 
-                    # Apply subtitles with ASS
                     subtitle_cmd = [
                         "ffmpeg", "-y", "-i", segment_path,
                         "-vf", f"ass={ass_path}",
@@ -245,11 +247,9 @@ def process_video():
                 filename = video_url.split('/')[-1]
                 output_key = f"segment_{segment_idx}_{filename}"
                 
-                # Upload to R2
                 logger.info(f"Uploading segment {segment_idx} to R2 as {output_key}")
                 s3.upload_file(output_path, output_bucket, output_key)
 
-                # Upload to Dropbox
                 dropbox_path = f"{dropbox_folder}/segment_{segment_idx}_{filename}"
                 dropbox_result = upload_to_dropbox(output_path, dropbox_path)
 
@@ -292,9 +292,8 @@ def generate_srt():
         if not s3:
             return jsonify({"error": "S3 client not configured"}), 500
 
-        # Genera il file SRT
         srt_content = ""
-        chunk_size = 4  # Parole per sottotitolo
+        chunk_size = 4
         subtitle_index = 1
         
         for i in range(0, len(words), chunk_size):
@@ -305,11 +304,9 @@ def generate_srt():
             start_ms = chunk[0]['start']
             end_ms = chunk[-1]['end']
             
-            # Converti millisecondi in formato SRT (HH:MM:SS,mmm)
             start_time = format_srt_time(start_ms)
             end_time = format_srt_time(end_ms)
             
-            # Testo del sottotitolo
             text = " ".join([w['text'] for w in chunk])
             
             srt_content += f"{subtitle_index}\n"
@@ -318,7 +315,6 @@ def generate_srt():
             
             subtitle_index += 1
         
-        # Genera nome file da video_url se presente, altrimenti usa timestamp
         if video_url:
             filename = video_url.split('/')[-1].replace('.mp4', '.srt')
             base_filename = video_url.split('/')[-1].replace('.mp4', '')
@@ -332,11 +328,9 @@ def generate_srt():
             tmp_path = tmp.name
         
         try:
-            # Upload to R2
             s3.upload_file(tmp_path, output_bucket, filename)
             logger.info(f"SRT uploaded to R2 as {filename}")
             
-            # Upload to Dropbox
             dropbox_path = f"{dropbox_folder}/{filename}"
             dropbox_result = upload_to_dropbox(tmp_path, dropbox_path)
         finally:
@@ -358,4 +352,3 @@ def generate_srt():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
