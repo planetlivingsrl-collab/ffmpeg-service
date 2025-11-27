@@ -153,6 +153,60 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(ass_content)
 
+@app.post("/identify_keywords")
+def identify_keywords():
+    try:
+        import anthropic
+        
+        raw_data = request.get_json()
+        logger.info("Received keyword identification request")
+        
+        if isinstance(raw_data, dict):
+            data = raw_data.get("body", raw_data)
+        else:
+            data = raw_data
+        
+        full_text = data.get("full_text", "")
+        
+        if not full_text:
+            return jsonify({"error": "Missing full_text"}), 400
+        
+        # Usa API Anthropic per identificare keywords
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=500,
+            messages=[{
+                "role": "user",
+                "content": f"Analizza questo testo in italiano e identifica le PAROLE CHIAVE più importanti ed emozionali (nomi propri, numeri, verbi d'azione, concetti chiave, parole emotive). Rispondi SOLO con un array JSON di parole, tutto minuscolo, senza punteggiatura.\n\nTesto: {full_text}\n\nRispondi nel formato: [\"parola1\", \"parola2\", \"parola3\"]"
+            }]
+        )
+        
+        response_text = message.content[0].text
+        
+        # Estrai array JSON
+        import re
+        keywords_match = re.search(r'\[.*?\]', response_text)
+        keywords = []
+        
+        if keywords_match:
+            import json
+            keywords = json.loads(keywords_match.group(0))
+        
+        logger.info(f"Identified {len(keywords)} keywords: {keywords}")
+        
+        return jsonify({
+            "success": True,
+            "keywords": keywords
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error identifying keywords: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 @app.post("/process")
 def process_video():
     try:
