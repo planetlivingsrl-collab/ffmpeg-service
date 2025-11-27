@@ -6,6 +6,8 @@ import tempfile
 import logging
 import urllib.request
 import time
+import re
+import json
 import dropbox
 from dropbox.exceptions import ApiError
 from botocore.config import Config
@@ -89,10 +91,8 @@ def create_copernicus_ass(words, segment_start, output_path, keywords=None):
     if keywords is None:
         keywords = []
     
-    # Converti keywords in lowercase per matching case-insensitive
     keywords_lower = [k.lower().strip() for k in keywords]
     
-    # ASS header con stile Copernicus
     ass_content = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -107,7 +107,6 @@ Style: Default,Arial Black,75,&H00FFFFFF,&H000000FF,&H00000000,&HC0000000,-1,0,0
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     
-    # Raggruppa parole in chunks di 2-3
     chunk_size = 2
     chunks = []
     for i in range(0, len(words), chunk_size):
@@ -124,28 +123,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         start_ass = format_ass_time(max(0, start_time))
         end_ass = format_ass_time(max(0, end_time))
         
-        # Crea testo con colori per keywords
         text_parts = []
         for word in chunk:
             word_text = word['text'].strip().upper()
             word_lower = word['text'].strip().lower()
-            
-            # Rimuovi punteggiatura per matching
             word_clean = ''.join(c for c in word_lower if c.isalnum())
             
-            # Check se è una keyword
             is_keyword = word_clean in keywords_lower or word_lower in keywords_lower
             
             if is_keyword:
-                # Verde lime per keywords
                 text_parts.append(f"{{\\c&H00FF00&\\b1}}{word_text}{{\\c&HFFFFFF&\\b0}}")
             else:
-                # Bianco per parole normali
                 text_parts.append(word_text)
         
         subtitle_text = " ".join(text_parts)
-        
-        # Box viola con bordo nero spesso
         dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{{\\pos(540,1770)\\an2\\bord5\\3c&H000000&\\blur2\\p6}}m 0 0 b 10 -10 20 -10 30 0 l 1050 0 b 1060 -10 1070 -10 1080 0 l 1080 140 b 1070 150 1060 150 1050 140 l 30 140 b 20 150 10 150 0 140{{\\p0}}{{\\pos(540,1770)\\an2\\bord0\\c&H8040E0&}}{{\\alpha&H50}}{{\\pos(540,1770)\\an2\\bord5\\3c&H000000&}}{subtitle_text}\n"
         
         ass_content += dialogue_line
@@ -156,7 +147,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 @app.post("/identify_keywords")
 def identify_keywords():
     try:
-        import anthropic
+        from anthropic import Anthropic
         
         raw_data = request.get_json()
         logger.info("Received keyword identification request")
@@ -171,27 +162,28 @@ def identify_keywords():
         if not full_text:
             return jsonify({"error": "Missing full_text"}), 400
         
-        # Usa API Anthropic per identificare keywords
-        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
+        
+        client = Anthropic(api_key=api_key)
         
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=500,
             messages=[{
                 "role": "user",
-                "content": f"Analizza questo testo in italiano e identifica le PAROLE CHIAVE più importanti ed emozionali (nomi propri, numeri, verbi d'azione, concetti chiave, parole emotive). Rispondi SOLO con un array JSON di parole, tutto minuscolo, senza punteggiatura.\n\nTesto: {full_text}\n\nRispondi nel formato: [\"parola1\", \"parola2\", \"parola3\"]"
+                "content": f"Analizza questo testo in italiano e identifica le 8-12 PAROLE CHIAVE più importanti ed emozionali (nomi propri, numeri, verbi d'azione, concetti chiave, parole emotive). Rispondi SOLO con un array JSON di parole, tutto minuscolo, senza punteggiatura.\n\nTesto: {full_text}\n\nRispondi nel formato: [\"parola1\", \"parola2\", \"parola3\"]"
             }]
         )
         
         response_text = message.content[0].text
+        logger.info(f"AI Response: {response_text}")
         
-        # Estrai array JSON
-        import re
-        keywords_match = re.search(r'\[.*?\]', response_text)
+        keywords_match = re.search(r'\[.*?\]', response_text, re.DOTALL)
         keywords = []
         
         if keywords_match:
-            import json
             keywords = json.loads(keywords_match.group(0))
         
         logger.info(f"Identified {len(keywords)} keywords: {keywords}")
