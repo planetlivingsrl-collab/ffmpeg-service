@@ -87,7 +87,7 @@ def format_srt_time(milliseconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 def create_copernicus_ass(words, segment_start, output_path, keywords=None):
-    """Create ASS subtitle file with Copernicus style (highlighted keywords in green)"""
+    """Create ASS subtitle file with Copernicus karaoke style"""
     
     if keywords is None:
         keywords = []
@@ -102,13 +102,14 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial Black,75,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
+Style: Default,Arial Black,75,&H00FFFFFF,&H0000FF00,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     
-    chunk_size = 2
+    # Raggruppa parole in chunks di 3
+    chunk_size = 3
     chunks = []
     for i in range(0, len(words), chunk_size):
         chunk_words = words[i:i + chunk_size]
@@ -124,26 +125,32 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         start_ass = format_ass_time(max(0, start_time))
         end_ass = format_ass_time(max(0, end_time))
         
-        text_parts = []
-        for word in chunk:
+        # Costruisci la stringa karaoke
+        karaoke_text = ""
+        
+        for i, word in enumerate(chunk):
             word_text = word['text'].strip().upper()
             word_lower = word['text'].strip().lower()
             word_clean = ''.join(c for c in word_lower if c.isalnum())
             
+            # Calcola durata della parola in centesimi di secondo
+            word_duration_ms = word['end'] - word['start']
+            word_duration_centis = int(word_duration_ms / 10)
+            
             is_keyword = word_clean in keywords_lower or word_lower in keywords_lower
             
+            # Aggiungi tag karaoke con durata
             if is_keyword:
-                # Verde lime brillante per keywords
-                text_parts.append(f"{{\\c&H00FF00&}}{word_text}{{\\c&HFFFFFF&}}")
+                # Keywords: da grigio a verde lime
+                karaoke_text += f"{{\\k{word_duration_centis}\\c&H888888&}}{{\\1c&H00FF00&}}{word_text} "
             else:
-                # Bianco per parole normali
-                text_parts.append(word_text)
+                # Parole normali: da grigio a bianco
+                karaoke_text += f"{{\\k{word_duration_centis}}}{word_text} "
         
-        subtitle_text = " ".join(text_parts)
+        # Rimuovi spazio finale
+        karaoke_text = karaoke_text.rstrip()
         
-        # Dialogue semplice con solo il testo
-        dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{subtitle_text}\n"
-        
+        dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{karaoke_text}\n"
         ass_content += dialogue_line
     
     with open(output_path, 'w', encoding='utf-8') as f:
