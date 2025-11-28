@@ -94,6 +94,8 @@ def create_copernicus_ass(words, segment_start, output_path, keywords=None):
     
     keywords_lower = [k.lower().strip() for k in keywords]
     
+    logger.info(f"Creating ASS with {len(keywords_lower)} keywords: {keywords_lower}")
+    
     # Style: PrimaryColour = bianco (non pronunciato), SecondaryColour = blu azzurro (pronunciato)
     ass_content = """[Script Info]
 ScriptType: v4.00+
@@ -140,12 +142,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             
             is_keyword = word_clean in keywords_lower or word_lower in keywords_lower
             
-            # Tag karaoke: \k<durata> cambia il testo dal PrimaryColour (bianco) al SecondaryColour
             if is_keyword:
-                # Per keywords: cambia a verde lime invece del blu azzurro
-                karaoke_text += f"{{\\k{word_duration_centis}\\2c&H00FF00&}}{word_text} "
+                logger.info(f"Keyword matched: '{word_text}' (clean: '{word_clean}')")
+                # Per keywords: usa \1c per cambiare il colore primario a verde lime
+                karaoke_text += f"{{\\1c&H00FF00&\\k{word_duration_centis}}}{word_text}{{\\1c&HFFFFFF&}} "
             else:
-                # Per parole normali: cambia a blu azzurro (default SecondaryColour)
+                # Per parole normali: usa il karaoke normale (bianco -> blu)
                 karaoke_text += f"{{\\k{word_duration_centis}}}{word_text} "
         
         # Rimuovi spazio finale
@@ -156,6 +158,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(ass_content)
+    
+    logger.info(f"ASS file created: {output_path}")
 
 @app.post("/identify_keywords")
 def identify_keywords():
