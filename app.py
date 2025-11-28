@@ -87,7 +87,7 @@ def format_srt_time(milliseconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 def create_copernicus_ass(words, segment_start, output_path, keywords=None):
-    """Create ASS subtitle file with Copernicus karaoke style"""
+    """Create ASS subtitle file with Copernicus karaoke style - TWO LAYER approach"""
     
     if keywords is None:
         keywords = []
@@ -96,7 +96,7 @@ def create_copernicus_ass(words, segment_start, output_path, keywords=None):
     
     logger.info(f"Creating ASS with {len(keywords_lower)} keywords: {keywords_lower}")
     
-    # Style: PrimaryColour = bianco (non pronunciato), SecondaryColour = blu azzurro (pronunciato)
+    # Due stili: uno per karaoke normale, uno per keywords verdi
     ass_content = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -106,6 +106,7 @@ WrapStyle: 0
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,Arial Black,75,&H00FFFFFF,&H00FFAA00,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
+Style: Keyword,Arial Black,75,&H00FF00&,&H00FF00&,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -128,33 +129,36 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         start_ass = format_ass_time(max(0, start_time))
         end_ass = format_ass_time(max(0, end_time))
         
-        # Costruisci la stringa karaoke
+        # LAYER 0: Tutte le parole con karaoke normale (bianco -> blu)
         karaoke_text = ""
+        for word in chunk:
+            word_text = word['text'].strip().upper()
+            word_duration_ms = word['end'] - word['start']
+            word_duration_centis = int(word_duration_ms / 10)
+            karaoke_text += f"{{\\k{word_duration_centis}}}{word_text} "
         
+        karaoke_text = karaoke_text.rstrip()
+        dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{karaoke_text}\n"
+        ass_content += dialogue_line
+        
+        # LAYER 1: SOLO keywords in verde, con timing preciso (coprono il blu)
         for word in chunk:
             word_text = word['text'].strip().upper()
             word_lower = word['text'].strip().lower()
             word_clean = ''.join(c for c in word_lower if c.isalnum())
             
-            # Calcola durata della parola in centesimi di secondo
-            word_duration_ms = word['end'] - word['start']
-            word_duration_centis = int(word_duration_ms / 10)
-            
             is_keyword = word_clean in keywords_lower or word_lower in keywords_lower
             
             if is_keyword:
-                logger.info(f"Keyword matched: '{word_text}' (clean: '{word_clean}')")
-                # Per keywords: usa \1c per cambiare il colore primario a verde lime
-                karaoke_text += f"{{\\1c&H00FF00&\\k{word_duration_centis}}}{word_text}{{\\1c&HFFFFFF&}} "
-            else:
-                # Per parole normali: usa il karaoke normale (bianco -> blu)
-                karaoke_text += f"{{\\k{word_duration_centis}}}{word_text} "
-        
-        # Rimuovi spazio finale
-        karaoke_text = karaoke_text.rstrip()
-        
-        dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{karaoke_text}\n"
-        ass_content += dialogue_line
+                logger.info(f"Keyword matched: '{word_text}'")
+                word_start = (word['start'] / 1000.0) - segment_start
+                word_end = (word['end'] / 1000.0) - segment_start
+                word_start_ass = format_ass_time(max(0, word_start))
+                word_end_ass = format_ass_time(max(0, word_end))
+                
+                # Keyword verde su layer 1 (sopra il karaoke blu)
+                keyword_line = f"Dialogue: 1,{word_start_ass},{word_end_ass},Keyword,,0,0,0,,{word_text}\n"
+                ass_content += keyword_line
     
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(ass_content)
