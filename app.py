@@ -62,9 +62,7 @@ def upload_to_dropbox(file_path, dropbox_path):
             logger.info(f"Dropbox upload successful: {dropbox_path}")
             return dropbox_path
     except Exception as e:
-        logger.error(f"Dropbox upload error (continuing anyway): {str(e)}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Dropbox error (continuing anyway): {str(e)}")
         return None
 
 @app.get("/health")
@@ -96,7 +94,7 @@ def create_copernicus_ass(words, segment_start, output_path, keywords=None):
     
     keywords_lower = [k.lower().strip() for k in keywords]
     
-    # Style con colore primario grigio (non ancora pronunciato)
+    # Style con colore primario blu vivo (non ancora pronunciato)
     ass_content = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -105,7 +103,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial Black,75,&H00888888,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
+Style: Default,Arial Black,75,&H00FF0000,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -328,13 +326,7 @@ def process_video():
                 s3.upload_file(output_path, output_bucket, output_key)
 
                 dropbox_path = f"{dropbox_folder}/segment_{segment_idx}_{filename}"
-                logger.info(f"Attempting Dropbox upload: {dropbox_path}")
                 dropbox_result = upload_to_dropbox(output_path, dropbox_path)
-                
-                if dropbox_result:
-                    logger.info(f"Dropbox upload confirmed: {dropbox_result}")
-                else:
-                    logger.warning(f"Dropbox upload failed for segment {segment_idx}")
 
                 results.append({
                     "segment": segment_idx,
