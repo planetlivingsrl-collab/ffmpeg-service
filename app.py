@@ -94,7 +94,7 @@ def create_copernicus_ass(words, segment_start, output_path, keywords=None):
     
     keywords_lower = [k.lower().strip() for k in keywords]
     
-    # Style con colore primario blu vivo (non ancora pronunciato)
+    # Style: PrimaryColour = bianco (non pronunciato), SecondaryColour = blu azzurro (pronunciato)
     ass_content = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -103,7 +103,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial Black,75,&H00FF0000,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
+Style: Default,Arial Black,75,&H00FFFFFF,&H00FFAA00,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -140,12 +140,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             
             is_keyword = word_clean in keywords_lower or word_lower in keywords_lower
             
-            # Tag karaoke: \k<durata> cambia il testo dal PrimaryColour al SecondaryColour
+            # Tag karaoke: \k<durata> cambia il testo dal PrimaryColour (bianco) al SecondaryColour
             if is_keyword:
-                # Per keywords: cambia a verde lime
+                # Per keywords: cambia a verde lime invece del blu azzurro
                 karaoke_text += f"{{\\k{word_duration_centis}\\2c&H00FF00&}}{word_text} "
             else:
-                # Per parole normali: cambia a bianco (default SecondaryColour)
+                # Per parole normali: cambia a blu azzurro (default SecondaryColour)
                 karaoke_text += f"{{\\k{word_duration_centis}}}{word_text} "
         
         # Rimuovi spazio finale
