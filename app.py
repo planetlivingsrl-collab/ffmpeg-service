@@ -62,7 +62,9 @@ def upload_to_dropbox(file_path, dropbox_path):
             logger.info(f"Dropbox upload successful: {dropbox_path}")
             return dropbox_path
     except Exception as e:
-        logger.error(f"Dropbox error (continuing anyway): {str(e)}")
+        logger.error(f"Dropbox upload error (continuing anyway): {str(e)}")
+        import traceback
+        traceback.print_exc()
         return None
 
 @app.get("/health")
@@ -94,6 +96,7 @@ def create_copernicus_ass(words, segment_start, output_path, keywords=None):
     
     keywords_lower = [k.lower().strip() for k in keywords]
     
+    # Style con colore primario grigio (non ancora pronunciato)
     ass_content = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -102,14 +105,14 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial Black,75,&H00FFFFFF,&H0000FF00,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
+Style: Default,Arial Black,75,&H00888888,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     
-    # Raggruppa parole in chunks di 3
-    chunk_size = 3
+    # Raggruppa parole in chunks di 4
+    chunk_size = 4
     chunks = []
     for i in range(0, len(words), chunk_size):
         chunk_words = words[i:i + chunk_size]
@@ -128,7 +131,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # Costruisci la stringa karaoke
         karaoke_text = ""
         
-        for i, word in enumerate(chunk):
+        for word in chunk:
             word_text = word['text'].strip().upper()
             word_lower = word['text'].strip().lower()
             word_clean = ''.join(c for c in word_lower if c.isalnum())
@@ -139,12 +142,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             
             is_keyword = word_clean in keywords_lower or word_lower in keywords_lower
             
-            # Aggiungi tag karaoke con durata
+            # Tag karaoke: \k<durata> cambia il testo dal PrimaryColour al SecondaryColour
             if is_keyword:
-                # Keywords: da grigio a verde lime
-                karaoke_text += f"{{\\k{word_duration_centis}\\c&H888888&}}{{\\1c&H00FF00&}}{word_text} "
+                # Per keywords: cambia a verde lime
+                karaoke_text += f"{{\\k{word_duration_centis}\\2c&H00FF00&}}{word_text} "
             else:
-                # Parole normali: da grigio a bianco
+                # Per parole normali: cambia a bianco (default SecondaryColour)
                 karaoke_text += f"{{\\k{word_duration_centis}}}{word_text} "
         
         # Rimuovi spazio finale
@@ -325,7 +328,13 @@ def process_video():
                 s3.upload_file(output_path, output_bucket, output_key)
 
                 dropbox_path = f"{dropbox_folder}/segment_{segment_idx}_{filename}"
+                logger.info(f"Attempting Dropbox upload: {dropbox_path}")
                 dropbox_result = upload_to_dropbox(output_path, dropbox_path)
+                
+                if dropbox_result:
+                    logger.info(f"Dropbox upload confirmed: {dropbox_result}")
+                else:
+                    logger.warning(f"Dropbox upload failed for segment {segment_idx}")
 
                 results.append({
                     "segment": segment_idx,
