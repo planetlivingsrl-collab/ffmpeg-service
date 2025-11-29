@@ -73,9 +73,8 @@ def create_copernicus_ass(words, segment_start, output_path, keywords=None):
     
     keywords_lower = [k.lower().strip() for k in keywords]
     
-    logger.info(f"Creating ASS with {len(keywords_lower)} keywords: {keywords_lower}")
+    logger.info(f"Creating ASS with {len(keywords_lower)} keywords and {len(words)} words")
     
-    # Due stili: uno per karaoke normale, uno per keywords verdi
     ass_content = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -91,7 +90,6 @@ Style: Keyword,Arial Black,75,&H0000FF00,&H0000FF00,&H00000000,&H80000000,-1,0,0
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     
-    # Raggruppa parole in chunks di 4
     chunk_size = 4
     chunks = []
     for i in range(0, len(words), chunk_size):
@@ -101,26 +99,26 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     for chunk in chunks:
         if not chunk:
             continue
-            
-        start_time = (chunk[0]['start'] / 1000.0) - segment_start
-        end_time = (chunk[-1]['end'] / 1000.0) - segment_start
+        
+        # MODIFICATO: words arrivano già in secondi, non dividere per 1000
+        start_time = chunk[0]['start'] - segment_start
+        end_time = chunk[-1]['end'] - segment_start
         
         start_ass = format_ass_time(max(0, start_time))
         end_ass = format_ass_time(max(0, end_time))
         
-        # LAYER 0: Tutte le parole con karaoke normale (bianco -> blu)
         karaoke_text = ""
         for word in chunk:
             word_text = word['text'].strip().upper()
-            word_duration_ms = word['end'] - word['start']
-            word_duration_centis = int(word_duration_ms / 10)
+            # MODIFICATO: calcola durata in centisecondi (words già in secondi)
+            word_duration_secs = word['end'] - word['start']
+            word_duration_centis = int(word_duration_secs * 100)
             karaoke_text += f"{{\\k{word_duration_centis}}}{word_text} "
         
         karaoke_text = karaoke_text.rstrip()
         dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{karaoke_text}\n"
         ass_content += dialogue_line
         
-        # LAYER 1: SOLO keywords in verde, con timing preciso (coprono il blu)
         for word in chunk:
             word_text = word['text'].strip().upper()
             word_lower = word['text'].strip().lower()
@@ -130,12 +128,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             
             if is_keyword:
                 logger.info(f"Keyword matched: '{word_text}'")
-                word_start = (word['start'] / 1000.0) - segment_start
-                word_end = (word['end'] / 1000.0) - segment_start
+                # MODIFICATO: words già in secondi
+                word_start = word['start'] - segment_start
+                word_end = word['end'] - segment_start
                 word_start_ass = format_ass_time(max(0, word_start))
                 word_end_ass = format_ass_time(max(0, word_end))
                 
-                # Keyword verde su layer 1 (sopra il karaoke blu)
                 keyword_line = f"Dialogue: 1,{word_start_ass},{word_end_ass},Keyword,,0,0,0,,{word_text}\n"
                 ass_content += keyword_line
     
@@ -164,7 +162,6 @@ def identify_keywords():
         if not api_key:
             return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
         
-        # Chiamata diretta API Anthropic usando requests
         headers = {
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
@@ -195,7 +192,6 @@ def identify_keywords():
         response_text = response_data["content"][0]["text"]
         logger.info(f"AI Response: {response_text}")
         
-        # Estrai array JSON
         keywords_match = re.search(r'\[.*?\]', response_text, re.DOTALL)
         keywords = []
         
@@ -233,12 +229,17 @@ def process_video():
         keywords = data.get("keywords", [])
         
         logger.info(f"RECEIVED DATA with {len(keywords)} keywords: {keywords}")
+        
+        # MODIFICATO: segment_index per accedere all'array, output_index per il nome file
         segment_idx = data.get("segment_index", 0)
+        output_idx = data.get("output_index", segment_idx)  # fallback a segment_index
         
         if isinstance(segment_idx, str):
             segment_idx = int(segment_idx)
+        if isinstance(output_idx, str):
+            output_idx = int(output_idx)
         
-        logger.info(f"EXTRACTED segment_index: {segment_idx}")
+        logger.info(f"EXTRACTED segment_index: {segment_idx}, output_index: {output_idx}")
         
         if not segments:
             return jsonify({"error": "Missing segments"}), 400
@@ -270,19 +271,21 @@ def process_video():
                 return jsonify({"error": f"Download error: {str(e)}", "video_url": video_url}), 500
 
             all_words = data.get("words", [])
+            logger.info(f"Received {len(all_words)} words")
 
             for segment in segments_to_process:
-                logger.info(f"Processing segment {segment_idx}")
+                logger.info(f"Processing segment {output_idx}")
                 start = segment["start"]
                 end = segment["end"]
                 duration = end - start
 
-                # MODIFICATO: Usa TUTTE le parole del segmento per i sottotitoli
-                segment_words = [w for w in all_words if (w['start']/1000.0) >= start and (w['end']/1000.0) <= end]
+                # MODIFICATO: words arrivano già in secondi, non dividere per 1000
+                segment_words = [w for w in all_words if w['start'] >= start and w['end'] <= end]
                 logger.info(f"Filtered segment_words: {len(segment_words)}")
                 
-                segment_path = os.path.join(tmpdir, f"segment_{segment_idx}.mp4")
-                output_path = os.path.join(tmpdir, f"output_{segment_idx}.mp4")
+                # MODIFICATO: usa output_idx per i nomi file
+                segment_path = os.path.join(tmpdir, f"segment_{output_idx}.mp4")
+                output_path = os.path.join(tmpdir, f"output_{output_idx}.mp4")
 
                 cut_cmd = [
                     "ffmpeg", "-y", "-i", video_path,
@@ -292,8 +295,7 @@ def process_video():
                 subprocess.run(cut_cmd, check=True, capture_output=True)
 
                 if segment_words:
-                    ass_path = os.path.join(tmpdir, f"segment_{segment_idx}.ass")
-                    # MODIFICATO: Passa TUTTE le keywords, non filtrate per timestamp
+                    ass_path = os.path.join(tmpdir, f"segment_{output_idx}.ass")
                     create_copernicus_ass(segment_words, start, ass_path, keywords)
 
                     subtitle_cmd = [
@@ -306,19 +308,20 @@ def process_video():
                     output_path = segment_path
 
                 filename = video_url.split('/')[-1]
-                output_key = f"segment_{segment_idx}_{filename}"
+                # MODIFICATO: usa output_idx per il nome del file di output
+                output_key = f"segment_{output_idx}_{filename}"
                 
-                logger.info(f"Uploading segment {segment_idx} to R2 as {output_key}")
+                logger.info(f"Uploading segment {output_idx} to R2 as {output_key}")
                 s3.upload_file(output_path, output_bucket, output_key)
 
                 results.append({
-                    "segment": segment_idx,
+                    "segment": output_idx,
                     "url": f"https://cdn.vvcontent.com/{output_key}",
-                    "dropbox_path": None,  # Gestito da n8n
+                    "dropbox_path": None,
                     "duration": duration
                 })
                 
-                logger.info(f"Segment {segment_idx} completed")
+                logger.info(f"Segment {output_idx} completed")
 
         logger.info("All segments processed successfully")
         return jsonify({"success": True, "results": results}), 200
@@ -391,7 +394,7 @@ def generate_srt():
         return jsonify({
             "success": True,
             "srt_url": f"https://cdn.vvcontent.com/{filename}",
-            "dropbox_path": None,  # Gestito da n8n
+            "dropbox_path": None,
             "filename": filename
         }), 200
 
