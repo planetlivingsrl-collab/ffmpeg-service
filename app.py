@@ -85,7 +85,7 @@ WrapStyle: 0
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,Arial Black,75,&H00FFFFFF,&H00FFAA00,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
-Style: Keyword,Arial Black,75,&H00FF00&,&H00FF00&,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
+Style: Keyword,Arial Black,75,&H0000FF00,&H0000FF00,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -277,6 +277,7 @@ def process_video():
                 end = segment["end"]
                 duration = end - start
 
+                # MODIFICATO: Usa TUTTE le parole del segmento per i sottotitoli
                 segment_words = [w for w in all_words if (w['start']/1000.0) >= start and (w['end']/1000.0) <= end]
                 logger.info(f"Filtered segment_words: {len(segment_words)}")
                 
@@ -292,6 +293,7 @@ def process_video():
 
                 if segment_words:
                     ass_path = os.path.join(tmpdir, f"segment_{segment_idx}.ass")
+                    # MODIFICATO: Passa TUTTE le keywords, non filtrate per timestamp
                     create_copernicus_ass(segment_words, start, ass_path, keywords)
 
                     subtitle_cmd = [
