@@ -119,9 +119,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             is_keyword = word_clean in keywords_lower or word_lower in keywords_lower
             
             if is_keyword:
+                # Keyword: rosso, poi resetta al colore default azzurro
                 words_in_chunk.append({
                     'text': word_text,
-                    'karaoke': f"{{\\2c&H0000FF&\\k{word_duration_centis}}}{word_text}",
+                    'karaoke': f"{{\\2c&H0000FF&\\k{word_duration_centis}}}{word_text}{{\\2c&H00FFAA00&}}",
                     'is_keyword': True
                 })
                 logger.info(f"Keyword styled RED: '{word_text}'")
