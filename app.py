@@ -362,7 +362,7 @@ def generate_srt():
             subtitle_index += 1
         
         if video_url:
-            filename = video_url.split('/')[-1].replace('.mp4', '.srt')
+            filename = video_url.split('/')[-1].replace('.mp4', '_subtitles.srt')
         else:
             filename = f"subtitles_{int(time.time())}.srt"
         
@@ -392,3 +392,4 @@ def generate_srt():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
