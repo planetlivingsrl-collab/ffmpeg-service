@@ -66,7 +66,7 @@ def format_srt_time(milliseconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 def create_copernicus_ass(words, segment_start, output_path, keywords=None):
-    """Create ASS subtitle file with Copernicus karaoke style - TWO LAYER approach"""
+    """Create ASS subtitle file with karaoke style - keywords become RED when spoken"""
     
     if keywords is None:
         keywords = []
@@ -84,7 +84,6 @@ WrapStyle: 0
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,Arial Black,75,&H00FFFFFF,&H00FFAA00,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
-Style: Keyword,Arial Black,75,&H0000FF00,&H0000FF00,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -100,7 +99,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         if not chunk:
             continue
         
-        # MODIFICATO: words arrivano già in secondi, non dividere per 1000
         start_time = chunk[0]['start'] - segment_start
         end_time = chunk[-1]['end'] - segment_start
         
@@ -110,32 +108,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         karaoke_text = ""
         for word in chunk:
             word_text = word['text'].strip().upper()
-            # MODIFICATO: calcola durata in centisecondi (words già in secondi)
-            word_duration_secs = word['end'] - word['start']
-            word_duration_centis = int(word_duration_secs * 100)
-            karaoke_text += f"{{\\k{word_duration_centis}}}{word_text} "
-        
-        karaoke_text = karaoke_text.rstrip()
-        dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{karaoke_text}\n"
-        ass_content += dialogue_line
-        
-        for word in chunk:
-            word_text = word['text'].strip().upper()
             word_lower = word['text'].strip().lower()
             word_clean = ''.join(c for c in word_lower if c.isalnum())
+            
+            word_duration_secs = word['end'] - word['start']
+            word_duration_centis = int(word_duration_secs * 100)
             
             is_keyword = word_clean in keywords_lower or word_lower in keywords_lower
             
             if is_keyword:
-                logger.info(f"Keyword matched: '{word_text}'")
-                # MODIFICATO: words già in secondi
-                word_start = word['start'] - segment_start
-                word_end = word['end'] - segment_start
-                word_start_ass = format_ass_time(max(0, word_start))
-                word_end_ass = format_ass_time(max(0, word_end))
-                
-                keyword_line = f"Dialogue: 1,{word_start_ass},{word_end_ass},Keyword,,0,0,0,,{word_text}\n"
-                ass_content += keyword_line
+                karaoke_text += f"{{\\2c&H0000FF&\\k{word_duration_centis}}}{word_text} "
+                logger.info(f"Keyword styled RED: '{word_text}'")
+            else:
+                karaoke_text += f"{{\\k{word_duration_centis}}}{word_text} "
+        
+        karaoke_text = karaoke_text.rstrip()
+        dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{karaoke_text}\n"
+        ass_content += dialogue_line
     
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(ass_content)
@@ -230,9 +219,8 @@ def process_video():
         
         logger.info(f"RECEIVED DATA with {len(keywords)} keywords: {keywords}")
         
-        # MODIFICATO: segment_index per accedere all'array, output_index per il nome file
         segment_idx = data.get("segment_index", 0)
-        output_idx = data.get("output_index", segment_idx)  # fallback a segment_index
+        output_idx = data.get("output_index", segment_idx)
         
         if isinstance(segment_idx, str):
             segment_idx = int(segment_idx)
@@ -279,11 +267,9 @@ def process_video():
                 end = segment["end"]
                 duration = end - start
 
-                # MODIFICATO: words arrivano già in secondi, non dividere per 1000
                 segment_words = [w for w in all_words if w['start'] >= start and w['end'] <= end]
                 logger.info(f"Filtered segment_words: {len(segment_words)}")
                 
-                # MODIFICATO: usa output_idx per i nomi file
                 segment_path = os.path.join(tmpdir, f"segment_{output_idx}.mp4")
                 output_path = os.path.join(tmpdir, f"output_{output_idx}.mp4")
 
@@ -308,7 +294,6 @@ def process_video():
                     output_path = segment_path
 
                 filename = video_url.split('/')[-1]
-                # MODIFICATO: usa output_idx per il nome del file di output
                 output_key = f"segment_{output_idx}_{filename}"
                 
                 logger.info(f"Uploading segment {output_idx} to R2 as {output_key}")
