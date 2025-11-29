@@ -66,7 +66,7 @@ def format_srt_time(milliseconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 def create_copernicus_ass(words, segment_start, output_path, keywords=None):
-    """Create ASS subtitle file with karaoke style - keywords become RED when spoken"""
+    """Create ASS subtitle file with karaoke style - optimized for 1080x1920 vertical video"""
     
     if keywords is None:
         keywords = []
@@ -83,13 +83,15 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial Black,75,&H00FFFFFF,&H00FFAA00,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,0,2,50,50,180,1
+Style: Default,Arial Black,60,&H00FFFFFF,&H00FFAA00,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,0,2,60,60,200,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     
     chunk_size = 4
+    max_chars_per_line = 24
+    
     chunks = []
     for i in range(0, len(words), chunk_size):
         chunk_words = words[i:i + chunk_size]
@@ -105,7 +107,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         start_ass = format_ass_time(max(0, start_time))
         end_ass = format_ass_time(max(0, end_time))
         
-        karaoke_text = ""
+        words_in_chunk = []
         for word in chunk:
             word_text = word['text'].strip().upper()
             word_lower = word['text'].strip().lower()
@@ -117,12 +119,30 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             is_keyword = word_clean in keywords_lower or word_lower in keywords_lower
             
             if is_keyword:
-                karaoke_text += f"{{\\2c&H0000FF&\\k{word_duration_centis}}}{word_text} "
+                words_in_chunk.append({
+                    'text': word_text,
+                    'karaoke': f"{{\\2c&H0000FF&\\k{word_duration_centis}}}{word_text}",
+                    'is_keyword': True
+                })
                 logger.info(f"Keyword styled RED: '{word_text}'")
             else:
-                karaoke_text += f"{{\\k{word_duration_centis}}}{word_text} "
+                words_in_chunk.append({
+                    'text': word_text,
+                    'karaoke': f"{{\\k{word_duration_centis}}}{word_text}",
+                    'is_keyword': False
+                })
         
-        karaoke_text = karaoke_text.rstrip()
+        total_text = ' '.join([w['text'] for w in words_in_chunk])
+        
+        if len(total_text) > max_chars_per_line and len(words_in_chunk) > 1:
+            mid = len(words_in_chunk) // 2
+            
+            line1 = ' '.join([w['karaoke'] for w in words_in_chunk[:mid]])
+            line2 = ' '.join([w['karaoke'] for w in words_in_chunk[mid:]])
+            karaoke_text = f"{line1}\\N{line2}"
+        else:
+            karaoke_text = ' '.join([w['karaoke'] for w in words_in_chunk])
+        
         dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{karaoke_text}\n"
         ass_content += dialogue_line
     
@@ -392,4 +412,3 @@ def generate_srt():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
