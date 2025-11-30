@@ -46,7 +46,7 @@ s3 = (
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok"}), 200
+    return jsonify({"status": "ok", "version": "2.1-color-fix"}), 200
 
 def format_ass_time(seconds):
     """Format seconds as H:MM:SS.cc for ASS"""
@@ -73,8 +73,11 @@ def create_copernicus_ass(words, segment_start, output_path, keywords=None):
     
     keywords_lower = [k.lower().strip() for k in keywords]
     
-    logger.info(f"Creating ASS with {len(keywords_lower)} keywords and {len(words)} words")
+    logger.info(f"=== ASS CREATION DEBUG ===")
+    logger.info(f"Keywords received: {keywords_lower}")
+    logger.info(f"Number of words: {len(words)}")
     
+    # Stile default: bianco
     ass_content = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -97,6 +100,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         chunk_words = words[i:i + chunk_size]
         chunks.append(chunk_words)
     
+    keyword_count = 0
+    normal_count = 0
+    
     for chunk in chunks:
         if not chunk:
             continue
@@ -116,20 +122,22 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             is_keyword = word_clean in keywords_lower or word_lower in keywords_lower
             
             if is_keyword:
-                # Keyword: testo rosso con \c (colore primario)
+                # Keyword: rosso (BGR: 0000FF = rosso), poi reset
                 words_in_chunk.append({
                     'text': word_text,
-                    'styled': f"{{\\c&H0000FF&}}{word_text}{{\\c&H00FFFFFF&}}",
+                    'styled': f"{{\\1c&H0000FF&}}{word_text}{{\\r}}",
                     'is_keyword': True
                 })
-                logger.info(f"Keyword styled RED: '{word_text}'")
+                keyword_count += 1
+                logger.info(f"KEYWORD: '{word_text}' (matched: '{word_clean}')")
             else:
-                # Parola normale: bianca (default)
+                # Parola normale: nessun tag, usa stile default (bianco)
                 words_in_chunk.append({
                     'text': word_text,
                     'styled': word_text,
                     'is_keyword': False
                 })
+                normal_count += 1
         
         total_text = ' '.join([w['text'] for w in words_in_chunk])
         
@@ -144,6 +152,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         
         dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{styled_text}\n"
         ass_content += dialogue_line
+    
+    logger.info(f"=== ASS STATS ===")
+    logger.info(f"Keywords styled: {keyword_count}")
+    logger.info(f"Normal words: {normal_count}")
     
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(ass_content)
@@ -181,7 +193,7 @@ def identify_keywords():
             "max_tokens": 500,
             "messages": [{
                 "role": "user",
-                "content": f"Analizza questo testo in italiano e identifica le PAROLE CHIAVE più importanti ed emozionali (nomi propri, numeri, verbi d'azione, concetti chiave, parole emotive). Rispondi SOLO con un array JSON di parole, tutto minuscolo, senza punteggiatura.\n\nTesto: {full_text}\n\nRispondi nel formato: [\"parola1\", \"parola2\", \"parola3\"]"
+                "content": f"Analizza questo testo in italiano e identifica SOLO le 10-15 PAROLE CHIAVE più importanti (nomi propri, numeri importanti, verbi d'azione forti, concetti chiave). NON includere articoli, congiunzioni, preposizioni o parole comuni come 'ciao', 'benvenuto', 'sono', 'questo'. Rispondi SOLO con un array JSON di parole, tutto minuscolo, senza punteggiatura.\n\nTesto: {full_text}\n\nRispondi nel formato: [\"parola1\", \"parola2\", \"parola3\"]"
             }]
         }
         
@@ -236,7 +248,9 @@ def process_video():
         output_bucket = data.get("output_bucket", "shortconsottotitoli")
         keywords = data.get("keywords", [])
         
-        logger.info(f"RECEIVED DATA with {len(keywords)} keywords: {keywords}")
+        logger.info(f"=== PROCESS VIDEO DEBUG ===")
+        logger.info(f"Keywords received: {keywords}")
+        logger.info(f"Number of keywords: {len(keywords)}")
         
         segment_idx = data.get("segment_index", 0)
         output_idx = data.get("output_index", segment_idx)
@@ -302,6 +316,12 @@ def process_video():
                 if segment_words:
                     ass_path = os.path.join(tmpdir, f"segment_{output_idx}.ass")
                     create_copernicus_ass(segment_words, start, ass_path, keywords)
+                    
+                    # Log del contenuto ASS per debug
+                    with open(ass_path, 'r') as f:
+                        ass_content = f.read()
+                    logger.info(f"=== ASS FILE CONTENT (first 500 chars) ===")
+                    logger.info(ass_content[:500])
 
                     subtitle_cmd = [
                         "ffmpeg", "-y", "-i", segment_path,
