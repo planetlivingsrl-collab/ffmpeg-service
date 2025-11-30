@@ -22,6 +22,39 @@ R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY")
 R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY")
 R2_REGION = os.environ.get("R2_REGION", "us-east-1")
 
+# Stop words italiane da ignorare
+ITALIAN_STOP_WORDS = {
+    'il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'uno', 'una',
+    'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra',
+    'e', 'o', 'ma', 'se', 'che', 'chi', 'cui', 'non',
+    'mi', 'ti', 'ci', 'vi', 'si', 'lo', 'la', 'li', 'le', 'ne',
+    'io', 'tu', 'lui', 'lei', 'noi', 'voi', 'loro',
+    'mio', 'tuo', 'suo', 'nostro', 'vostro',
+    'questo', 'quello', 'quale', 'quanto',
+    'sono', 'sei', 'è', 'siamo', 'siete', 'hanno', 'ho', 'hai', 'ha', 'abbiamo',
+    'essere', 'avere', 'fare', 'dire', 'andare', 'venire', 'vedere',
+    'come', 'dove', 'quando', 'perché', 'cosa', 'quali',
+    'più', 'meno', 'molto', 'poco', 'tutto', 'tutti', 'ogni',
+    'anche', 'ancora', 'sempre', 'mai', 'già', 'ora', 'poi', 'prima', 'dopo',
+    'qui', 'qua', 'lì', 'là', 'su', 'giù',
+    'ciao', 'benvenuto', 'benvenuti', 'grazie', 'prego',
+    'beh', 'bene', 'ok', 'sì', 'no',
+    'al', 'dal', 'del', 'nel', 'sul', 'col',
+    'alla', 'dalla', 'della', 'nella', 'sulla',
+    'alle', 'dalle', 'delle', 'nelle', 'sulle',
+    'agli', 'dagli', 'degli', 'negli', 'sugli',
+    'ai', 'dai', 'dei', 'nei', 'sui',
+    'un', 'una', 'uno',
+    'me', 'te', 'sé',
+    'tra', 'fra', 'verso', 'oltre', 'sotto', 'sopra', 'dentro', 'fuori',
+    'proprio', 'stesso', 'altra', 'altre', 'altri', 'altro',
+    'fa', 'vai', 'vedo', 'vedi', 'vede', 'trovi', 'trova',
+    'po', "po'", 'oggi', 'ieri', 'domani',
+    'intanto', 'quindi', 'però', 'oppure', 'dunque', 'infatti',
+    'cose', 'cosa', 'caso', 'casi',
+    'solo', 'sola', 'soli', 'sole'
+}
+
 def normalize_region(region):
     if not region or region == "auto":
         return "us-east-1"
@@ -44,9 +77,42 @@ s3 = (
     else None
 )
 
+def filter_keywords(keywords):
+    """Filtra le keywords rimuovendo stop words e parole troppo corte"""
+    filtered = []
+    for kw in keywords:
+        kw_clean = kw.lower().strip()
+        # Rimuovi punteggiatura
+        kw_clean = ''.join(c for c in kw_clean if c.isalnum())
+        
+        # Salta se troppo corta (meno di 3 caratteri)
+        if len(kw_clean) < 3:
+            continue
+        
+        # Salta se è una stop word
+        if kw_clean in ITALIAN_STOP_WORDS:
+            continue
+        
+        # Salta se è solo numeri piccoli (meno di 3 cifre)
+        if kw_clean.isdigit() and len(kw_clean) < 3:
+            continue
+            
+        filtered.append(kw_clean)
+    
+    # Rimuovi duplicati mantenendo l'ordine
+    seen = set()
+    unique = []
+    for kw in filtered:
+        if kw not in seen:
+            seen.add(kw)
+            unique.append(kw)
+    
+    # Limita a max 30 keywords
+    return unique[:30]
+
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "version": "2.1-color-fix"}), 200
+    return jsonify({"status": "ok", "version": "2.2-stopwords-filter"}), 200
 
 def format_ass_time(seconds):
     """Format seconds as H:MM:SS.cc for ASS"""
@@ -71,11 +137,13 @@ def create_copernicus_ass(words, segment_start, output_path, keywords=None):
     if keywords is None:
         keywords = []
     
-    keywords_lower = [k.lower().strip() for k in keywords]
+    # Filtra le keywords
+    keywords_filtered = filter_keywords(keywords)
     
     logger.info(f"=== ASS CREATION DEBUG ===")
-    logger.info(f"Keywords received: {keywords_lower}")
-    logger.info(f"Number of words: {len(words)}")
+    logger.info(f"Keywords BEFORE filter: {len(keywords)}")
+    logger.info(f"Keywords AFTER filter: {len(keywords_filtered)}")
+    logger.info(f"Filtered keywords: {keywords_filtered}")
     
     # Stile default: bianco
     ass_content = """[Script Info]
@@ -119,19 +187,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             word_lower = word['text'].strip().lower()
             word_clean = ''.join(c for c in word_lower if c.isalnum())
             
-            is_keyword = word_clean in keywords_lower or word_lower in keywords_lower
+            is_keyword = word_clean in keywords_filtered
             
             if is_keyword:
-                # Keyword: rosso (BGR: 0000FF = rosso), poi reset
+                # Keyword: rosso
                 words_in_chunk.append({
                     'text': word_text,
-                    'styled': f"{{\\1c&H0000FF&}}{word_text}{{\\r}}",
+                    'styled': f"{{\\1c&H0000FF&}}{word_text}{{\\1c&H00FFFFFF&}}",
                     'is_keyword': True
                 })
                 keyword_count += 1
-                logger.info(f"KEYWORD: '{word_text}' (matched: '{word_clean}')")
+                logger.info(f"KEYWORD MATCH: '{word_text}'")
             else:
-                # Parola normale: nessun tag, usa stile default (bianco)
+                # Parola normale: bianca (nessun tag)
                 words_in_chunk.append({
                     'text': word_text,
                     'styled': word_text,
@@ -193,7 +261,7 @@ def identify_keywords():
             "max_tokens": 500,
             "messages": [{
                 "role": "user",
-                "content": f"Analizza questo testo in italiano e identifica SOLO le 10-15 PAROLE CHIAVE più importanti (nomi propri, numeri importanti, verbi d'azione forti, concetti chiave). NON includere articoli, congiunzioni, preposizioni o parole comuni come 'ciao', 'benvenuto', 'sono', 'questo'. Rispondi SOLO con un array JSON di parole, tutto minuscolo, senza punteggiatura.\n\nTesto: {full_text}\n\nRispondi nel formato: [\"parola1\", \"parola2\", \"parola3\"]"
+                "content": f"Analizza questo testo in italiano e identifica SOLO le 15-20 PAROLE CHIAVE più importanti e specifiche (nomi propri, numeri importanti come prezzi o quantità, luoghi, termini tecnici del settore). NON includere verbi comuni, articoli, congiunzioni, preposizioni o parole generiche. Rispondi SOLO con un array JSON di parole, tutto minuscolo, senza punteggiatura.\n\nTesto: {full_text}\n\nRispondi nel formato: [\"parola1\", \"parola2\", \"parola3\"]"
             }]
         }
         
@@ -249,8 +317,7 @@ def process_video():
         keywords = data.get("keywords", [])
         
         logger.info(f"=== PROCESS VIDEO DEBUG ===")
-        logger.info(f"Keywords received: {keywords}")
-        logger.info(f"Number of keywords: {len(keywords)}")
+        logger.info(f"Keywords received (raw): {len(keywords)}")
         
         segment_idx = data.get("segment_index", 0)
         output_idx = data.get("output_index", segment_idx)
@@ -317,11 +384,13 @@ def process_video():
                     ass_path = os.path.join(tmpdir, f"segment_{output_idx}.ass")
                     create_copernicus_ass(segment_words, start, ass_path, keywords)
                     
-                    # Log del contenuto ASS per debug
+                    # Log primi 3 dialoghi per debug
                     with open(ass_path, 'r') as f:
-                        ass_content = f.read()
-                    logger.info(f"=== ASS FILE CONTENT (first 500 chars) ===")
-                    logger.info(ass_content[:500])
+                        lines = f.readlines()
+                    dialogue_lines = [l for l in lines if l.startswith('Dialogue:')][:3]
+                    logger.info(f"=== FIRST 3 DIALOGUE LINES ===")
+                    for dl in dialogue_lines:
+                        logger.info(dl.strip())
 
                     subtitle_cmd = [
                         "ffmpeg", "-y", "-i", segment_path,
