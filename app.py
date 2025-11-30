@@ -22,37 +22,23 @@ R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY")
 R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY")
 R2_REGION = os.environ.get("R2_REGION", "us-east-1")
 
-# Stop words italiane da ignorare
+# Stop words italiane da ignorare (sicurezza aggiuntiva)
 ITALIAN_STOP_WORDS = {
     'il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'uno', 'una',
     'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra',
     'e', 'o', 'ma', 'se', 'che', 'chi', 'cui', 'non',
     'mi', 'ti', 'ci', 'vi', 'si', 'lo', 'la', 'li', 'le', 'ne',
     'io', 'tu', 'lui', 'lei', 'noi', 'voi', 'loro',
-    'mio', 'tuo', 'suo', 'nostro', 'vostro',
     'questo', 'quello', 'quale', 'quanto',
     'sono', 'sei', 'è', 'siamo', 'siete', 'hanno', 'ho', 'hai', 'ha', 'abbiamo',
-    'essere', 'avere', 'fare', 'dire', 'andare', 'venire', 'vedere',
-    'come', 'dove', 'quando', 'perché', 'cosa', 'quali',
+    'come', 'dove', 'quando', 'perché', 'cosa',
     'più', 'meno', 'molto', 'poco', 'tutto', 'tutti', 'ogni',
-    'anche', 'ancora', 'sempre', 'mai', 'già', 'ora', 'poi', 'prima', 'dopo',
-    'qui', 'qua', 'lì', 'là', 'su', 'giù',
-    'ciao', 'benvenuto', 'benvenuti', 'grazie', 'prego',
+    'anche', 'ancora', 'sempre', 'mai', 'già', 'ora', 'poi',
+    'qui', 'qua', 'lì', 'là',
+    'ciao', 'benvenuto', 'benvenuti', 'grazie',
     'beh', 'bene', 'ok', 'sì', 'no',
-    'al', 'dal', 'del', 'nel', 'sul', 'col',
-    'alla', 'dalla', 'della', 'nella', 'sulla',
-    'alle', 'dalle', 'delle', 'nelle', 'sulle',
-    'agli', 'dagli', 'degli', 'negli', 'sugli',
-    'ai', 'dai', 'dei', 'nei', 'sui',
-    'un', 'una', 'uno',
-    'me', 'te', 'sé',
-    'tra', 'fra', 'verso', 'oltre', 'sotto', 'sopra', 'dentro', 'fuori',
-    'proprio', 'stesso', 'altra', 'altre', 'altri', 'altro',
-    'fa', 'vai', 'vedo', 'vedi', 'vede', 'trovi', 'trova',
-    'po', "po'", 'oggi', 'ieri', 'domani',
-    'intanto', 'quindi', 'però', 'oppure', 'dunque', 'infatti',
-    'cose', 'cosa', 'caso', 'casi',
-    'solo', 'sola', 'soli', 'sole'
+    'al', 'dal', 'del', 'nel', 'sul',
+    'alla', 'dalla', 'della', 'nella', 'sulla'
 }
 
 def normalize_region(region):
@@ -81,25 +67,17 @@ def filter_keywords(keywords):
     """Filtra le keywords rimuovendo stop words e parole troppo corte"""
     filtered = []
     for kw in keywords:
-        kw_clean = kw.lower().strip()
-        # Rimuovi punteggiatura
-        kw_clean = ''.join(c for c in kw_clean if c.isalnum())
-        
-        # Salta se troppo corta (meno di 3 caratteri)
-        if len(kw_clean) < 3:
-            continue
-        
-        # Salta se è una stop word
-        if kw_clean in ITALIAN_STOP_WORDS:
-            continue
-        
-        # Salta se è solo numeri piccoli (meno di 3 cifre)
-        if kw_clean.isdigit() and len(kw_clean) < 3:
-            continue
+        if isinstance(kw, str):
+            kw_clean = kw.lower().strip()
+            kw_clean = ''.join(c for c in kw_clean if c.isalnum() or c == ' ')
             
-        filtered.append(kw_clean)
+            if len(kw_clean) < 2:
+                continue
+            if kw_clean in ITALIAN_STOP_WORDS:
+                continue
+                
+            filtered.append(kw_clean)
     
-    # Rimuovi duplicati mantenendo l'ordine
     seen = set()
     unique = []
     for kw in filtered:
@@ -107,15 +85,13 @@ def filter_keywords(keywords):
             seen.add(kw)
             unique.append(kw)
     
-    # Limita a max 30 keywords
     return unique[:30]
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "version": "2.2-stopwords-filter"}), 200
+    return jsonify({"status": "ok", "version": "2.3-final"}), 200
 
 def format_ass_time(seconds):
-    """Format seconds as H:MM:SS.cc for ASS"""
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     secs = int(seconds % 60)
@@ -123,7 +99,6 @@ def format_ass_time(seconds):
     return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
 
 def format_srt_time(milliseconds):
-    """Converti millisecondi in formato SRT (HH:MM:SS,mmm)"""
     seconds = milliseconds / 1000
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
@@ -132,20 +107,16 @@ def format_srt_time(milliseconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 def create_copernicus_ass(words, segment_start, output_path, keywords=None):
-    """Create ASS subtitle file with colored keywords - optimized for 1080x1920 vertical video"""
+    """Create ASS subtitle file - bianco default, rosso per keywords"""
     
     if keywords is None:
         keywords = []
     
-    # Filtra le keywords
     keywords_filtered = filter_keywords(keywords)
     
-    logger.info(f"=== ASS CREATION DEBUG ===")
-    logger.info(f"Keywords BEFORE filter: {len(keywords)}")
-    logger.info(f"Keywords AFTER filter: {len(keywords_filtered)}")
-    logger.info(f"Filtered keywords: {keywords_filtered}")
+    logger.info(f"Keywords for styling: {keywords_filtered}")
     
-    # Stile default: bianco
+    # Stile: bianco di default
     ass_content = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -169,7 +140,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         chunks.append(chunk_words)
     
     keyword_count = 0
-    normal_count = 0
     
     for chunk in chunks:
         if not chunk:
@@ -187,31 +157,33 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             word_lower = word['text'].strip().lower()
             word_clean = ''.join(c for c in word_lower if c.isalnum())
             
-            is_keyword = word_clean in keywords_filtered
+            # Controlla se la parola matcha una keyword (anche parziale per keywords composte)
+            is_keyword = False
+            for kw in keywords_filtered:
+                if word_clean == kw or word_clean in kw.split() or kw in word_clean:
+                    is_keyword = True
+                    break
             
             if is_keyword:
-                # Keyword: rosso
+                # ROSSO per keyword
                 words_in_chunk.append({
                     'text': word_text,
                     'styled': f"{{\\1c&H0000FF&}}{word_text}{{\\1c&H00FFFFFF&}}",
                     'is_keyword': True
                 })
                 keyword_count += 1
-                logger.info(f"KEYWORD MATCH: '{word_text}'")
             else:
-                # Parola normale: bianca (nessun tag)
+                # BIANCO per parole normali
                 words_in_chunk.append({
                     'text': word_text,
                     'styled': word_text,
                     'is_keyword': False
                 })
-                normal_count += 1
         
         total_text = ' '.join([w['text'] for w in words_in_chunk])
         
         if len(total_text) > max_chars_per_line and len(words_in_chunk) > 1:
             mid = len(words_in_chunk) // 2
-            
             line1 = ' '.join([w['styled'] for w in words_in_chunk[:mid]])
             line2 = ' '.join([w['styled'] for w in words_in_chunk[mid:]])
             styled_text = f"{line1}\\N{line2}"
@@ -221,14 +193,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{styled_text}\n"
         ass_content += dialogue_line
     
-    logger.info(f"=== ASS STATS ===")
-    logger.info(f"Keywords styled: {keyword_count}")
-    logger.info(f"Normal words: {normal_count}")
+    logger.info(f"Total keywords highlighted: {keyword_count}")
     
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(ass_content)
-    
-    logger.info(f"ASS file created: {output_path}")
 
 @app.post("/identify_keywords")
 def identify_keywords():
@@ -261,7 +229,7 @@ def identify_keywords():
             "max_tokens": 500,
             "messages": [{
                 "role": "user",
-                "content": f"Analizza questo testo in italiano e identifica SOLO le 15-20 PAROLE CHIAVE più importanti e specifiche (nomi propri, numeri importanti come prezzi o quantità, luoghi, termini tecnici del settore). NON includere verbi comuni, articoli, congiunzioni, preposizioni o parole generiche. Rispondi SOLO con un array JSON di parole, tutto minuscolo, senza punteggiatura.\n\nTesto: {full_text}\n\nRispondi nel formato: [\"parola1\", \"parola2\", \"parola3\"]"
+                "content": f"Analizza questo testo in italiano e identifica SOLO le 15-20 PAROLE CHIAVE più importanti (nomi propri, numeri come prezzi, luoghi, termini tecnici). NON includere verbi comuni, articoli, congiunzioni. Rispondi SOLO con un array JSON, tutto minuscolo.\n\nTesto: {full_text}\n\nFormato: [\"parola1\", \"parola2\"]"
             }]
         }
         
@@ -273,12 +241,11 @@ def identify_keywords():
         )
         
         if response.status_code != 200:
-            logger.error(f"Anthropic API error: {response.status_code} - {response.text}")
+            logger.error(f"Anthropic API error: {response.status_code}")
             return jsonify({"error": f"API error: {response.status_code}"}), 500
         
         response_data = response.json()
         response_text = response_data["content"][0]["text"]
-        logger.info(f"AI Response: {response_text}")
         
         keywords_match = re.search(r'\[.*?\]', response_text, re.DOTALL)
         keywords = []
@@ -294,7 +261,7 @@ def identify_keywords():
         }), 200
         
     except Exception as e:
-        logger.error(f"Error identifying keywords: {str(e)}")
+        logger.error(f"Error: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -303,7 +270,7 @@ def identify_keywords():
 def process_video():
     try:
         raw_data = request.get_json()
-        logger.info(f"Received request")
+        logger.info("Received process request")
         
         if isinstance(raw_data, dict):
             data = raw_data.get("body", raw_data)
@@ -312,12 +279,10 @@ def process_video():
 
         video_url = data.get("video_url")
         segments = data.get("segments")
-        subtitles_data = data.get("subtitles")
         output_bucket = data.get("output_bucket", "shortconsottotitoli")
         keywords = data.get("keywords", [])
         
-        logger.info(f"=== PROCESS VIDEO DEBUG ===")
-        logger.info(f"Keywords received (raw): {len(keywords)}")
+        logger.info(f"Keywords received: {keywords}")
         
         segment_idx = data.get("segment_index", 0)
         output_idx = data.get("output_index", segment_idx)
@@ -326,8 +291,6 @@ def process_video():
             segment_idx = int(segment_idx)
         if isinstance(output_idx, str):
             output_idx = int(output_idx)
-        
-        logger.info(f"EXTRACTED segment_index: {segment_idx}, output_index: {output_idx}")
         
         if not segments:
             return jsonify({"error": "Missing segments"}), 400
@@ -342,81 +305,61 @@ def process_video():
             return jsonify({"error": f"segment_index {segment_idx} out of range"}), 400
         
         target_segment = segments[segment_idx]
-        segments_to_process = [target_segment]
-
-        logger.info(f"Processing video: {video_url}")
 
         results = []
         with tempfile.TemporaryDirectory() as tmpdir:
             video_path = os.path.join(tmpdir, "input.mp4")
             
-            logger.info("Downloading video from public URL")
             try:
                 urllib.request.urlretrieve(video_url, video_path)
                 logger.info(f"Download complete: {os.path.getsize(video_path)} bytes")
             except Exception as e:
-                logger.error(f"Download failed: {str(e)}")
-                return jsonify({"error": f"Download error: {str(e)}", "video_url": video_url}), 500
+                return jsonify({"error": f"Download error: {str(e)}"}), 500
 
             all_words = data.get("words", [])
-            logger.info(f"Received {len(all_words)} words")
+            
+            start = target_segment["start"]
+            end = target_segment["end"]
+            duration = end - start
 
-            for segment in segments_to_process:
-                logger.info(f"Processing segment {output_idx}")
-                start = segment["start"]
-                end = segment["end"]
-                duration = end - start
+            segment_words = [w for w in all_words if w['start'] >= start and w['end'] <= end]
+            logger.info(f"Segment {output_idx}: {len(segment_words)} words")
+            
+            segment_path = os.path.join(tmpdir, f"segment_{output_idx}.mp4")
+            output_path = os.path.join(tmpdir, f"output_{output_idx}.mp4")
 
-                segment_words = [w for w in all_words if w['start'] >= start and w['end'] <= end]
-                logger.info(f"Filtered segment_words: {len(segment_words)}")
-                
-                segment_path = os.path.join(tmpdir, f"segment_{output_idx}.mp4")
-                output_path = os.path.join(tmpdir, f"output_{output_idx}.mp4")
+            cut_cmd = [
+                "ffmpeg", "-y", "-i", video_path,
+                "-ss", str(start), "-t", str(duration),
+                "-c", "copy", segment_path
+            ]
+            subprocess.run(cut_cmd, check=True, capture_output=True)
 
-                cut_cmd = [
-                    "ffmpeg", "-y", "-i", video_path,
-                    "-ss", str(start), "-t", str(duration),
-                    "-c", "copy", segment_path
+            if segment_words:
+                ass_path = os.path.join(tmpdir, f"segment_{output_idx}.ass")
+                create_copernicus_ass(segment_words, start, ass_path, keywords)
+
+                subtitle_cmd = [
+                    "ffmpeg", "-y", "-i", segment_path,
+                    "-vf", f"ass={ass_path}",
+                    "-c:a", "copy", output_path
                 ]
-                subprocess.run(cut_cmd, check=True, capture_output=True)
+                subprocess.run(subtitle_cmd, check=True, capture_output=True)
+            else:
+                output_path = segment_path
 
-                if segment_words:
-                    ass_path = os.path.join(tmpdir, f"segment_{output_idx}.ass")
-                    create_copernicus_ass(segment_words, start, ass_path, keywords)
-                    
-                    # Log primi 3 dialoghi per debug
-                    with open(ass_path, 'r') as f:
-                        lines = f.readlines()
-                    dialogue_lines = [l for l in lines if l.startswith('Dialogue:')][:3]
-                    logger.info(f"=== FIRST 3 DIALOGUE LINES ===")
-                    for dl in dialogue_lines:
-                        logger.info(dl.strip())
+            filename = video_url.split('/')[-1]
+            output_key = f"segment_{output_idx}_{filename}"
+            
+            s3.upload_file(output_path, output_bucket, output_key)
 
-                    subtitle_cmd = [
-                        "ffmpeg", "-y", "-i", segment_path,
-                        "-vf", f"ass={ass_path}",
-                        "-c:a", "copy", output_path
-                    ]
-                    subprocess.run(subtitle_cmd, check=True, capture_output=True)
-                else:
-                    output_path = segment_path
+            results.append({
+                "segment": output_idx,
+                "url": f"https://cdn.vvcontent.com/{output_key}",
+                "dropbox_path": None,
+                "duration": duration
+            })
 
-                filename = video_url.split('/')[-1]
-                output_key = f"segment_{output_idx}_{filename}"
-                
-                logger.info(f"Uploading segment {output_idx} to R2 as {output_key}")
-                s3.upload_file(output_path, output_bucket, output_key)
-
-                results.append({
-                    "segment": output_idx,
-                    "url": f"https://cdn.vvcontent.com/{output_key}",
-                    "dropbox_path": None,
-                    "duration": duration
-                })
-                
-                logger.info(f"Segment {output_idx} completed")
-
-        logger.info("All segments processed successfully")
         return jsonify({"success": True, "results": results}), 200
 
     except Exception as e:
@@ -429,7 +372,6 @@ def process_video():
 def generate_srt():
     try:
         raw_data = request.get_json()
-        logger.info(f"Received SRT generation request")
         
         if isinstance(raw_data, dict):
             data = raw_data.get("body", raw_data)
@@ -480,7 +422,6 @@ def generate_srt():
         
         try:
             s3.upload_file(tmp_path, output_bucket, filename)
-            logger.info(f"SRT uploaded to R2 as {filename}")
         finally:
             os.unlink(tmp_path)
         
@@ -492,7 +433,7 @@ def generate_srt():
         }), 200
 
     except Exception as e:
-        logger.error(f"Error generating SRT: {str(e)}")
+        logger.error(f"Error: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
