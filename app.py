@@ -22,7 +22,6 @@ R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY")
 R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY")
 R2_REGION = os.environ.get("R2_REGION", "us-east-1")
 
-# Stop words italiane da ignorare (sicurezza aggiuntiva)
 ITALIAN_STOP_WORDS = {
     'il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'uno', 'una',
     'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra',
@@ -64,7 +63,6 @@ s3 = (
 )
 
 def filter_keywords(keywords):
-    """Filtra le keywords rimuovendo stop words e parole troppo corte"""
     filtered = []
     for kw in keywords:
         if isinstance(kw, str):
@@ -89,7 +87,7 @@ def filter_keywords(keywords):
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "version": "2.3-final"}), 200
+    return jsonify({"status": "ok", "version": "2.4-karaoke"}), 200
 
 def format_ass_time(seconds):
     hours = int(seconds // 3600)
@@ -107,7 +105,10 @@ def format_srt_time(milliseconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 def create_copernicus_ass(words, segment_start, output_path, keywords=None):
-    """Create ASS subtitle file - bianco default, rosso per keywords"""
+    """Create ASS subtitle file with karaoke effect
+    - Parole normali: bianco -> azzurro
+    - Keywords: bianco -> rosso
+    """
     
     if keywords is None:
         keywords = []
@@ -116,7 +117,11 @@ def create_copernicus_ass(words, segment_start, output_path, keywords=None):
     
     logger.info(f"Keywords for styling: {keywords_filtered}")
     
-    # Stile: bianco di default
+    # Colori BGR:
+    # Bianco: &H00FFFFFF
+    # Azzurro: &H00FFAA00
+    # Rosso: &H0000FF
+    
     ass_content = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -125,7 +130,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial Black,60,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,0,2,60,60,200,1
+Style: Default,Arial Black,60,&H00FFAA00,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,0,2,60,60,200,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -157,7 +162,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             word_lower = word['text'].strip().lower()
             word_clean = ''.join(c for c in word_lower if c.isalnum())
             
-            # Controlla se la parola matcha una keyword (anche parziale per keywords composte)
+            # Calcola durata parola in centisecondi
+            word_duration_secs = word['end'] - word['start']
+            word_duration_centis = max(1, int(word_duration_secs * 100))
+            
+            # Controlla se è una keyword
             is_keyword = False
             for kw in keywords_filtered:
                 if word_clean == kw or word_clean in kw.split() or kw in word_clean:
@@ -165,18 +174,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     break
             
             if is_keyword:
-                # ROSSO per keyword
+                # KEYWORD: bianco -> rosso con karaoke
+                # \1c = colore primario (dopo karaoke) = rosso
+                # \2c = colore secondario (prima karaoke) = bianco
                 words_in_chunk.append({
                     'text': word_text,
-                    'styled': f"{{\\1c&H0000FF&}}{word_text}{{\\1c&H00FFFFFF&}}",
+                    'styled': f"{{\\1c&H0000FF&\\2c&H00FFFFFF&\\k{word_duration_centis}}}{word_text}",
                     'is_keyword': True
                 })
                 keyword_count += 1
             else:
-                # BIANCO per parole normali
+                # NORMALE: bianco -> azzurro con karaoke
+                # Usa i colori dello stile Default (già impostati)
                 words_in_chunk.append({
                     'text': word_text,
-                    'styled': word_text,
+                    'styled': f"{{\\k{word_duration_centis}}}{word_text}",
                     'is_keyword': False
                 })
         
