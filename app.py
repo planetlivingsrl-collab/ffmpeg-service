@@ -66,7 +66,7 @@ def format_srt_time(milliseconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 def create_copernicus_ass(words, segment_start, output_path, keywords=None):
-    """Create ASS subtitle file with karaoke style - optimized for 1080x1920 vertical video"""
+    """Create ASS subtitle file with colored keywords - optimized for 1080x1920 vertical video"""
     
     if keywords is None:
         keywords = []
@@ -83,7 +83,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial Black,60,&H00FFFFFF,&H00FFAA00,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,0,2,60,60,200,1
+Style: Default,Arial Black,60,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,0,2,60,60,200,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -113,24 +113,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             word_lower = word['text'].strip().lower()
             word_clean = ''.join(c for c in word_lower if c.isalnum())
             
-            word_duration_secs = word['end'] - word['start']
-            word_duration_centis = int(word_duration_secs * 100)
-            
             is_keyword = word_clean in keywords_lower or word_lower in keywords_lower
             
             if is_keyword:
-                # Keyword: colore rosso
+                # Keyword: testo rosso con \c (colore primario)
                 words_in_chunk.append({
                     'text': word_text,
-                    'karaoke': f"{{\\2c&H0000FF&\\k{word_duration_centis}}}{word_text}",
+                    'styled': f"{{\\c&H0000FF&}}{word_text}{{\\c&H00FFFFFF&}}",
                     'is_keyword': True
                 })
                 logger.info(f"Keyword styled RED: '{word_text}'")
             else:
-                # Parola normale: esplicita colore azzurro per resettare
+                # Parola normale: bianca (default)
                 words_in_chunk.append({
                     'text': word_text,
-                    'karaoke': f"{{\\2c&H00FFAA00&\\k{word_duration_centis}}}{word_text}",
+                    'styled': word_text,
                     'is_keyword': False
                 })
         
@@ -139,13 +136,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         if len(total_text) > max_chars_per_line and len(words_in_chunk) > 1:
             mid = len(words_in_chunk) // 2
             
-            line1 = ' '.join([w['karaoke'] for w in words_in_chunk[:mid]])
-            line2 = ' '.join([w['karaoke'] for w in words_in_chunk[mid:]])
-            karaoke_text = f"{line1}\\N{line2}"
+            line1 = ' '.join([w['styled'] for w in words_in_chunk[:mid]])
+            line2 = ' '.join([w['styled'] for w in words_in_chunk[mid:]])
+            styled_text = f"{line1}\\N{line2}"
         else:
-            karaoke_text = ' '.join([w['karaoke'] for w in words_in_chunk])
+            styled_text = ' '.join([w['styled'] for w in words_in_chunk])
         
-        dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{karaoke_text}\n"
+        dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{styled_text}\n"
         ass_content += dialogue_line
     
     with open(output_path, 'w', encoding='utf-8') as f:
