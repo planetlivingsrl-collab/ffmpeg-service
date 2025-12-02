@@ -241,7 +241,7 @@ def identify_keywords():
             "max_tokens": 500,
             "messages": [{
                 "role": "user",
-                "content": f"Analizza questo testo in italiano e identifica SOLO le 15-20 PAROLE CHIAVE più importanti (nomi propri, numeri come prezzi, luoghi, termini tecnici). NON includere verbi comuni, articoli, congiunzioni. Rispondi SOLO con un array JSON, tutto minuscolo.\n\nTesto: {full_text}\n\nFormato: [\"parola1\", \"parola2\"]"
+                "content": f"Analizza questo testo in italiano e identifica le PAROLE CHIAVE più importanti e attraenti per chi guarda (ad esempio nomi propri, numeri come prezzi, luoghi, termini tecnici). NON includere verbi comuni, articoli, congiunzioni. Rispondi SOLO con un array JSON, tutto minuscolo.\n\nTesto: {full_text}\n\nFormato: [\"parola1\", \"parola2\"]"
             }]
         }
         
@@ -453,3 +453,4 @@ def generate_srt():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
