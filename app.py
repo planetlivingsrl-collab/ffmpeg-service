@@ -46,7 +46,7 @@ s3 = (
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "version": "2.5-clean"}), 200
+    return jsonify({"status": "ok", "version": "2.6-hq"}), 200
 
 def format_ass_time(seconds):
     hours = int(seconds // 3600)
@@ -69,7 +69,6 @@ def create_copernicus_ass(words, segment_start, output_path, keywords=None):
     if keywords is None:
         keywords = []
     
-    # Normalizza keywords
     keywords_clean = []
     for kw in keywords:
         if isinstance(kw, str):
@@ -300,10 +299,16 @@ def process_video():
                 ass_path = os.path.join(tmpdir, f"segment_{output_idx}.ass")
                 create_copernicus_ass(segment_words, start, ass_path, keywords)
 
+                # ALTA QUALITA: CRF 18 = quasi lossless, preset medium = buon bilanciamento
                 subtitle_cmd = [
                     "ffmpeg", "-y", "-i", segment_path,
                     "-vf", f"ass={ass_path}",
-                    "-c:a", "copy", output_path
+                    "-c:v", "libx264",
+                    "-crf", "18",
+                    "-preset", "medium",
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    output_path
                 ]
                 subprocess.run(subtitle_cmd, check=True, capture_output=True)
             else:
