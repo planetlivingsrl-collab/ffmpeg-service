@@ -46,7 +46,7 @@ s3 = (
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "version": "2.6-hq"}), 200
+    return jsonify({"status": "ok", "version": "2.7-karaoke-fix"}), 200
 
 def format_ass_time(seconds):
     hours = int(seconds // 3600)
@@ -64,7 +64,10 @@ def format_srt_time(milliseconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 def create_copernicus_ass(words, segment_start, output_path, keywords=None):
-    """Create ASS subtitle file with karaoke effect"""
+    """Create ASS subtitle file with karaoke effect
+    - Parole normali: bianco -> azzurro
+    - Keywords: bianco -> rosso
+    """
     
     if keywords is None:
         keywords = []
@@ -76,6 +79,13 @@ def create_copernicus_ass(words, segment_start, output_path, keywords=None):
     
     logger.info(f"Keywords for styling: {keywords_clean}")
     
+    # Colori BGR per ASS:
+    # PrimaryColour = colore DOPO karaoke
+    # SecondaryColour = colore PRIMA del karaoke (durante animazione)
+    # Azzurro: &H00FFAA00
+    # Bianco: &H00FFFFFF
+    # Rosso: &H000000FF
+    
     ass_content = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -85,6 +95,7 @@ WrapStyle: 0
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,Arial Black,60,&H00FFAA00,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,0,2,60,60,200,1
+Style: Keyword,Arial Black,60,&H000000FF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,0,2,60,60,200,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -127,16 +138,18 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     break
             
             if is_keyword:
+                # KEYWORD: bianco -> rosso con karaoke fill
                 words_in_chunk.append({
                     'text': word_text,
-                    'styled': f"{{\\1c&H0000FF&\\2c&H00FFFFFF&\\k{word_duration_centis}}}{word_text}",
+                    'styled': f"{{\\rKeyword\\kf{word_duration_centis}}}{word_text}{{\\rDefault}}",
                     'is_keyword': True
                 })
                 keyword_count += 1
             else:
+                # NORMALE: bianco -> azzurro con karaoke fill
                 words_in_chunk.append({
                     'text': word_text,
-                    'styled': f"{{\\k{word_duration_centis}}}{word_text}",
+                    'styled': f"{{\\kf{word_duration_centis}}}{word_text}",
                     'is_keyword': False
                 })
         
@@ -299,7 +312,6 @@ def process_video():
                 ass_path = os.path.join(tmpdir, f"segment_{output_idx}.ass")
                 create_copernicus_ass(segment_words, start, ass_path, keywords)
 
-                # ALTA QUALITA: CRF 18 = quasi lossless, preset medium = buon bilanciamento
                 subtitle_cmd = [
                     "ffmpeg", "-y", "-i", segment_path,
                     "-vf", f"ass={ass_path}",
