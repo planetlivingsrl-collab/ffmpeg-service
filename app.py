@@ -22,24 +22,6 @@ R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY")
 R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY")
 R2_REGION = os.environ.get("R2_REGION", "us-east-1")
 
-ITALIAN_STOP_WORDS = {
-    'il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'uno', 'una',
-    'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra',
-    'e', 'o', 'ma', 'se', 'che', 'chi', 'cui', 'non',
-    'mi', 'ti', 'ci', 'vi', 'si', 'lo', 'la', 'li', 'le', 'ne',
-    'io', 'tu', 'lui', 'lei', 'noi', 'voi', 'loro',
-    'questo', 'quello', 'quale', 'quanto',
-    'sono', 'sei', 'è', 'siamo', 'siete', 'hanno', 'ho', 'hai', 'ha', 'abbiamo',
-    'come', 'dove', 'quando', 'perché', 'cosa',
-    'più', 'meno', 'molto', 'poco', 'tutto', 'tutti', 'ogni',
-    'anche', 'ancora', 'sempre', 'mai', 'già', 'ora', 'poi',
-    'qui', 'qua', 'lì', 'là',
-    'ciao', 'benvenuto', 'benvenuti', 'grazie',
-    'beh', 'bene', 'ok', 'sì', 'no',
-    'al', 'dal', 'del', 'nel', 'sul',
-    'alla', 'dalla', 'della', 'nella', 'sulla'
-}
-
 def normalize_region(region):
     if not region or region == "auto":
         return "us-east-1"
@@ -62,32 +44,9 @@ s3 = (
     else None
 )
 
-def filter_keywords(keywords):
-    filtered = []
-    for kw in keywords:
-        if isinstance(kw, str):
-            kw_clean = kw.lower().strip()
-            kw_clean = ''.join(c for c in kw_clean if c.isalnum() or c == ' ')
-            
-            if len(kw_clean) < 2:
-                continue
-            if kw_clean in ITALIAN_STOP_WORDS:
-                continue
-                
-            filtered.append(kw_clean)
-    
-    seen = set()
-    unique = []
-    for kw in filtered:
-        if kw not in seen:
-            seen.add(kw)
-            unique.append(kw)
-    
-    return unique[:30]
-
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "version": "2.4-karaoke"}), 200
+    return jsonify({"status": "ok", "version": "2.5-clean"}), 200
 
 def format_ass_time(seconds):
     hours = int(seconds // 3600)
@@ -105,22 +64,18 @@ def format_srt_time(milliseconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 def create_copernicus_ass(words, segment_start, output_path, keywords=None):
-    """Create ASS subtitle file with karaoke effect
-    - Parole normali: bianco -> azzurro
-    - Keywords: bianco -> rosso
-    """
+    """Create ASS subtitle file with karaoke effect"""
     
     if keywords is None:
         keywords = []
     
-    keywords_filtered = filter_keywords(keywords)
+    # Normalizza keywords
+    keywords_clean = []
+    for kw in keywords:
+        if isinstance(kw, str):
+            keywords_clean.append(kw.lower().strip())
     
-    logger.info(f"Keywords for styling: {keywords_filtered}")
-    
-    # Colori BGR:
-    # Bianco: &H00FFFFFF
-    # Azzurro: &H00FFAA00
-    # Rosso: &H0000FF
+    logger.info(f"Keywords for styling: {keywords_clean}")
     
     ass_content = """[Script Info]
 ScriptType: v4.00+
@@ -162,21 +117,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             word_lower = word['text'].strip().lower()
             word_clean = ''.join(c for c in word_lower if c.isalnum())
             
-            # Calcola durata parola in centisecondi
             word_duration_secs = word['end'] - word['start']
             word_duration_centis = max(1, int(word_duration_secs * 100))
             
-            # Controlla se è una keyword
             is_keyword = False
-            for kw in keywords_filtered:
-                if word_clean == kw or word_clean in kw.split() or kw in word_clean:
+            for kw in keywords_clean:
+                kw_clean = ''.join(c for c in kw if c.isalnum())
+                if word_clean == kw_clean:
                     is_keyword = True
                     break
             
             if is_keyword:
-                # KEYWORD: bianco -> rosso con karaoke
-                # \1c = colore primario (dopo karaoke) = rosso
-                # \2c = colore secondario (prima karaoke) = bianco
                 words_in_chunk.append({
                     'text': word_text,
                     'styled': f"{{\\1c&H0000FF&\\2c&H00FFFFFF&\\k{word_duration_centis}}}{word_text}",
@@ -184,8 +135,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 })
                 keyword_count += 1
             else:
-                # NORMALE: bianco -> azzurro con karaoke
-                # Usa i colori dello stile Default (già impostati)
                 words_in_chunk.append({
                     'text': word_text,
                     'styled': f"{{\\k{word_duration_centis}}}{word_text}",
@@ -453,4 +402,3 @@ def generate_srt():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
