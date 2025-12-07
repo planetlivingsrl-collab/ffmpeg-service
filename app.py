@@ -46,7 +46,7 @@ s3 = (
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "version": "2.7-karaoke-fix"}), 200
+    return jsonify({"status": "ok", "version": "2.8-sync-fix"}), 200
 
 def format_ass_time(seconds):
     hours = int(seconds // 3600)
@@ -78,13 +78,6 @@ def create_copernicus_ass(words, segment_start, output_path, keywords=None):
             keywords_clean.append(kw.lower().strip())
     
     logger.info(f"Keywords for styling: {keywords_clean}")
-    
-    # Colori BGR per ASS:
-    # PrimaryColour = colore DOPO karaoke
-    # SecondaryColour = colore PRIMA del karaoke (durante animazione)
-    # Azzurro: &H00FFAA00
-    # Bianco: &H00FFFFFF
-    # Rosso: &H000000FF
     
     ass_content = """[Script Info]
 ScriptType: v4.00+
@@ -138,7 +131,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     break
             
             if is_keyword:
-                # KEYWORD: bianco -> rosso con karaoke fill
                 words_in_chunk.append({
                     'text': word_text,
                     'styled': f"{{\\rKeyword\\kf{word_duration_centis}}}{word_text}{{\\rDefault}}",
@@ -146,7 +138,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 })
                 keyword_count += 1
             else:
-                # NORMALE: bianco -> azzurro con karaoke fill
                 words_in_chunk.append({
                     'text': word_text,
                     'styled': f"{{\\kf{word_duration_centis}}}{word_text}",
@@ -295,16 +286,20 @@ def process_video():
             end = target_segment["end"]
             duration = end - start
 
-            segment_words = [w for w in all_words if w['start'] >= start and w['end'] <= end]
+            # MODIFICA 1: Filtro migliorato - include parole che INIZIANO nel segmento
+            segment_words = [w for w in all_words if w['start'] >= start and w['start'] < end]
             logger.info(f"Segment {output_idx}: {len(segment_words)} words")
             
             segment_path = os.path.join(tmpdir, f"segment_{output_idx}.mp4")
             output_path = os.path.join(tmpdir, f"output_{output_idx}.mp4")
 
+            # MODIFICA 2: Taglio preciso con -ss prima di -i e re-encoding
             cut_cmd = [
-                "ffmpeg", "-y", "-i", video_path,
-                "-ss", str(start), "-t", str(duration),
-                "-c", "copy", segment_path
+                "ffmpeg", "-y", "-ss", str(start), "-i", video_path,
+                "-t", str(duration),
+                "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+                "-c:a", "aac", "-b:a", "192k",
+                segment_path
             ]
             subprocess.run(cut_cmd, check=True, capture_output=True)
 
