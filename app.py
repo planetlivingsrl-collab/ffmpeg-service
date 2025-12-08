@@ -46,7 +46,7 @@ s3 = (
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "version": "2.8-sync-fix"}), 200
+    return jsonify({"status": "ok", "version": "3.0-frame-accurate"}), 200
 
 def format_ass_time(seconds):
     hours = int(seconds // 3600)
@@ -64,11 +64,6 @@ def format_srt_time(milliseconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 def create_copernicus_ass(words, segment_start, output_path, keywords=None):
-    """Create ASS subtitle file with karaoke effect
-    - Parole normali: bianco -> azzurro
-    - Keywords: bianco -> rosso
-    """
-    
     if keywords is None:
         keywords = []
     
@@ -286,16 +281,17 @@ def process_video():
             end = target_segment["end"]
             duration = end - start
 
-            # MODIFICA 1: Filtro migliorato - include parole che INIZIANO nel segmento
             segment_words = [w for w in all_words if w['start'] >= start and w['start'] < end]
             logger.info(f"Segment {output_idx}: {len(segment_words)} words")
             
             segment_path = os.path.join(tmpdir, f"segment_{output_idx}.mp4")
             output_path = os.path.join(tmpdir, f"output_{output_idx}.mp4")
 
-            # MODIFICA 2: Taglio preciso con -ss prima di -i e re-encoding
+            # Taglio frame-accurate: -ss DOPO -i
             cut_cmd = [
-                "ffmpeg", "-y", "-ss", str(start), "-i", video_path,
+                "ffmpeg", "-y",
+                "-i", video_path,
+                "-ss", str(start),
                 "-t", str(duration),
                 "-c:v", "libx264", "-crf", "18", "-preset", "fast",
                 "-c:a", "aac", "-b:a", "192k",
