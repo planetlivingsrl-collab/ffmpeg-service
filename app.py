@@ -46,7 +46,7 @@ s3 = (
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "version": "3.0-frame-accurate"}), 200
+    return jsonify({"status": "ok", "version": "3.1-drift-correction"}), 200
 
 def format_ass_time(seconds):
     hours = int(seconds // 3600)
@@ -63,7 +63,7 @@ def format_srt_time(milliseconds):
     millis = int((seconds % 1) * 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
-def create_copernicus_ass(words, segment_start, output_path, keywords=None):
+def create_copernicus_ass(words, segment_start, output_path, keywords=None, time_offset=0):
     if keywords is None:
         keywords = []
     
@@ -73,6 +73,7 @@ def create_copernicus_ass(words, segment_start, output_path, keywords=None):
             keywords_clean.append(kw.lower().strip())
     
     logger.info(f"Keywords for styling: {keywords_clean}")
+    logger.info(f"Time offset applied: {time_offset}s")
     
     ass_content = """[Script Info]
 ScriptType: v4.00+
@@ -103,8 +104,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         if not chunk:
             continue
         
-        start_time = chunk[0]['start'] - segment_start
-        end_time = chunk[-1]['end'] - segment_start
+        # Applica offset di correzione
+        start_time = chunk[0]['start'] - segment_start + time_offset
+        end_time = chunk[-1]['end'] - segment_start + time_offset
         
         start_ass = format_ass_time(max(0, start_time))
         end_ass = format_ass_time(max(0, end_time))
@@ -287,21 +289,26 @@ def process_video():
             segment_path = os.path.join(tmpdir, f"segment_{output_idx}.mp4")
             output_path = os.path.join(tmpdir, f"output_{output_idx}.mp4")
 
-            # Taglio frame-accurate: -ss DOPO -i
+            # Taglio con -ss prima di -i (veloce ma potrebbe avere leggero offset)
             cut_cmd = [
                 "ffmpeg", "-y",
-                "-i", video_path,
                 "-ss", str(start),
+                "-i", video_path,
                 "-t", str(duration),
                 "-c:v", "libx264", "-crf", "18", "-preset", "fast",
                 "-c:a", "aac", "-b:a", "192k",
                 segment_path
             ]
             subprocess.run(cut_cmd, check=True, capture_output=True)
+            
+            # Calcola offset di correzione basato sulla posizione nel video
+            # Drift stimato: circa 0.1s per 100s di video
+            time_offset = -start * 0.001
+            logger.info(f"Calculated time offset: {time_offset}s for segment starting at {start}s")
 
             if segment_words:
                 ass_path = os.path.join(tmpdir, f"segment_{output_idx}.ass")
-                create_copernicus_ass(segment_words, start, ass_path, keywords)
+                create_copernicus_ass(segment_words, start, ass_path, keywords, time_offset)
 
                 subtitle_cmd = [
                     "ffmpeg", "-y", "-i", segment_path,
