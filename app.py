@@ -46,13 +46,15 @@ s3 = (
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "version": "3.3-single-pass-precise"}), 200
+    return jsonify({"status": "ok", "version": "3.4-pts-reset"}), 200
 
 def format_ass_time(seconds):
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     secs = int(seconds % 60)
-    centis = int((seconds % 1) * 100)
+    centis = round((seconds % 1) * 100)
+    if centis >= 100:
+        centis = 99
     return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
 
 def format_srt_time(milliseconds):
@@ -131,7 +133,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             word_clean = ''.join(c for c in word_lower if c.isalnum())
             
             word_duration_secs = word['end'] - word['start']
-            word_duration_centis = max(1, int(word_duration_secs * 100))
+            word_duration_centis = max(1, round(word_duration_secs * 100))
             
             is_keyword = False
             for kw in keywords_clean:
@@ -302,23 +304,25 @@ def process_video():
             segment_path = os.path.join(tmpdir, f"segment_{output_idx}.mp4")
             output_path = os.path.join(tmpdir, f"output_{output_idx}.mp4")
 
-            # TAGLIO SINGOLO PRECISO (frame-accurate)
-            # -ss dopo -i garantisce precisione al frame
-            # -avoid_negative_ts make_zero resetta i timestamp a 0
+            # PASSO 1: Taglio preciso con reset completo dei PTS
+            # setpts=PTS-STARTPTS forza i timestamp video a partire da 0
+            # asetpts=PTS-STARTPTS forza i timestamp audio a partire da 0
             segment_cmd = [
                 "ffmpeg", "-y",
                 "-i", video_path,
                 "-ss", str(start),
                 "-t", str(duration),
+                "-vf", "setpts=PTS-STARTPTS",
+                "-af", "asetpts=PTS-STARTPTS",
                 "-c:v", "libx264", "-crf", "18", "-preset", "fast",
                 "-c:a", "aac", "-b:a", "192k",
-                "-avoid_negative_ts", "make_zero",
                 segment_path
             ]
             logger.info(f"Cutting segment: start={start}, duration={duration}")
             subprocess.run(segment_cmd, check=True, capture_output=True)
-            logger.info(f"Segment cut complete")
+            logger.info(f"Segment cut complete with PTS reset")
 
+            # PASSO 2: Applica sottotitoli sul video con PTS corretti
             if segment_words:
                 ass_path = os.path.join(tmpdir, f"segment_{output_idx}.ass")
                 create_copernicus_ass(segment_words, start, ass_path, keywords)
@@ -334,8 +338,10 @@ def process_video():
                     output_path
                 ]
                 subprocess.run(subtitle_cmd, check=True, capture_output=True)
+                logger.info(f"Subtitles applied")
             else:
                 output_path = segment_path
+                logger.info(f"No words for segment, skipping subtitles")
 
             filename = video_url.split('/')[-1]
             output_key = f"segment_{output_idx}_{filename}"
