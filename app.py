@@ -46,7 +46,7 @@ s3 = (
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "version": "3.2-two-pass-cut"}), 200
+    return jsonify({"status": "ok", "version": "3.3-single-pass-precise"}), 200
 
 def format_ass_time(seconds):
     hours = int(seconds // 3600)
@@ -297,43 +297,27 @@ def process_video():
             duration = end - start
 
             segment_words = [w for w in all_words if w['start'] >= start and w['start'] < end]
-            logger.info(f"Segment {output_idx}: {len(segment_words)} words")
+            logger.info(f"Segment {output_idx}: {len(segment_words)} words, start={start}, end={end}")
             
-            rough_cut_path = os.path.join(tmpdir, f"rough_{output_idx}.mp4")
             segment_path = os.path.join(tmpdir, f"segment_{output_idx}.mp4")
             output_path = os.path.join(tmpdir, f"output_{output_idx}.mp4")
 
-            # PASSO 1: Taglio approssimativo veloce (cerca keyframe)
-            # Prendiamo qualche secondo in più all'inizio
-            rough_start = max(0, start - 5)
-            rough_duration = duration + 10
-            
-            rough_cmd = [
+            # TAGLIO SINGOLO PRECISO (frame-accurate)
+            # -ss dopo -i garantisce precisione al frame
+            # -avoid_negative_ts make_zero resetta i timestamp a 0
+            segment_cmd = [
                 "ffmpeg", "-y",
-                "-ss", str(rough_start),
                 "-i", video_path,
-                "-t", str(rough_duration),
-                "-c", "copy",
-                rough_cut_path
-            ]
-            subprocess.run(rough_cmd, check=True, capture_output=True)
-            logger.info(f"Rough cut complete")
-            
-            # PASSO 2: Taglio preciso sul segmento già estratto
-            # Ora -ss dopo -i è veloce perché il file è corto
-            precise_start = start - rough_start
-            
-            precise_cmd = [
-                "ffmpeg", "-y",
-                "-i", rough_cut_path,
-                "-ss", str(precise_start),
+                "-ss", str(start),
                 "-t", str(duration),
                 "-c:v", "libx264", "-crf", "18", "-preset", "fast",
                 "-c:a", "aac", "-b:a", "192k",
+                "-avoid_negative_ts", "make_zero",
                 segment_path
             ]
-            subprocess.run(precise_cmd, check=True, capture_output=True)
-            logger.info(f"Precise cut complete")
+            logger.info(f"Cutting segment: start={start}, duration={duration}")
+            subprocess.run(segment_cmd, check=True, capture_output=True)
+            logger.info(f"Segment cut complete")
 
             if segment_words:
                 ass_path = os.path.join(tmpdir, f"segment_{output_idx}.ass")
