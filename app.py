@@ -46,7 +46,7 @@ s3 = (
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "version": "3.5-actual-pts"}), 200
+    return jsonify({"status": "ok", "version": "3.6-fixed-pts-detection"}), 200
 
 def format_ass_time(seconds):
     hours = int(seconds // 3600)
@@ -65,53 +65,72 @@ def format_srt_time(milliseconds):
     millis = int((seconds % 1) * 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
-def get_first_audio_pts(video_path):
-    """Ottieni il timestamp REALE del primo packet audio"""
+def get_stream_start_time(video_path, stream_type="a"):
+    """Ottieni lo start_time dello stream audio o video"""
     try:
+        stream_selector = "a:0" if stream_type == "a" else "v:0"
         result = subprocess.run([
             "ffprobe", "-v", "error",
-            "-select_streams", "a:0",
-            "-show_entries", "packet=pts_time",
-            "-of", "csv=p=0",
-            "-read_intervals", "%+0.5",
+            "-select_streams", stream_selector,
+            "-show_entries", "stream=start_time",
+            "-of", "default=noprint_wrappers=1:nokey=1",
             video_path
         ], capture_output=True, text=True)
-        lines = result.stdout.strip().split('\n')
-        for line in lines:
-            try:
-                pts = float(line)
-                if pts >= 0:
-                    return pts
-            except:
-                continue
-        return 0.0
+        output = result.stdout.strip()
+        if output and output != "N/A":
+            return float(output)
+        return None
     except Exception as e:
-        logger.error(f"Error getting audio PTS: {e}")
-        return 0.0
+        logger.error(f"Error getting stream start_time: {e}")
+        return None
 
-def get_first_video_pts(video_path):
-    """Ottieni il timestamp REALE del primo frame video"""
+def get_first_packet_pts(video_path, stream_type="a"):
+    """Ottieni il PTS del primo pacchetto leggendo solo i primi pacchetti"""
     try:
+        stream_selector = "a:0" if stream_type == "a" else "v:0"
         result = subprocess.run([
             "ffprobe", "-v", "error",
-            "-select_streams", "v:0",
+            "-select_streams", stream_selector,
             "-show_entries", "packet=pts_time",
             "-of", "csv=p=0",
-            "-read_intervals", "%+0.5",
+            "-read_intervals", "%+#10",
             video_path
         ], capture_output=True, text=True)
         lines = result.stdout.strip().split('\n')
         for line in lines:
-            try:
-                pts = float(line)
-                if pts >= 0:
-                    return pts
-            except:
-                continue
-        return 0.0
+            line = line.strip()
+            if line and line != "N/A":
+                try:
+                    return float(line)
+                except ValueError:
+                    continue
+        return None
     except Exception as e:
-        logger.error(f"Error getting video PTS: {e}")
-        return 0.0
+        logger.error(f"Error getting first packet PTS: {e}")
+        return None
+
+def get_actual_start_time(video_path):
+    """Ottieni il tempo di inizio effettivo del video usando metodi multipli"""
+    
+    audio_stream_start = get_stream_start_time(video_path, "a")
+    logger.info(f"Audio stream start_time: {audio_stream_start}")
+    
+    if audio_stream_start is not None and audio_stream_start > 0:
+        return audio_stream_start
+    
+    audio_packet_pts = get_first_packet_pts(video_path, "a")
+    logger.info(f"Audio first packet PTS: {audio_packet_pts}")
+    
+    if audio_packet_pts is not None and audio_packet_pts > 0:
+        return audio_packet_pts
+    
+    video_stream_start = get_stream_start_time(video_path, "v")
+    logger.info(f"Video stream start_time: {video_stream_start}")
+    
+    if video_stream_start is not None and video_stream_start > 0:
+        return video_stream_start
+    
+    return 0.0
 
 def create_copernicus_ass(words, segment_start, output_path, keywords=None):
     if keywords is None:
@@ -335,12 +354,15 @@ def process_video():
             segment_words = [w for w in all_words if w['start'] >= start and w['start'] < end]
             logger.info(f"Segment {output_idx}: {len(segment_words)} words, requested start={start}, end={end}")
             
+            if segment_words:
+                first_word_time = segment_words[0]['start']
+                logger.info(f"First word timestamp: {first_word_time}")
+            
             temp_segment_path = os.path.join(tmpdir, f"temp_segment_{output_idx}.mp4")
             segment_path = os.path.join(tmpdir, f"segment_{output_idx}.mp4")
             output_path = os.path.join(tmpdir, f"output_{output_idx}.mp4")
 
             # PASSO 1: Taglio con -copyts per mantenere i timestamp originali
-            # Questo ci permette di sapere ESATTAMENTE dove FFmpeg ha tagliato
             temp_cut_cmd = [
                 "ffmpeg", "-y",
                 "-i", video_path,
@@ -349,20 +371,25 @@ def process_video():
                 "-c:v", "libx264", "-crf", "18", "-preset", "fast",
                 "-c:a", "aac", "-b:a", "192k",
                 "-copyts",
+                "-start_at_zero",
                 temp_segment_path
             ]
             logger.info(f"Cutting segment with copyts: start={start}, duration={duration}")
-            subprocess.run(temp_cut_cmd, check=True, capture_output=True)
+            result = subprocess.run(temp_cut_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error(f"FFmpeg cut error: {result.stderr}")
+            logger.info(f"Cut complete")
             
-            # PASSO 2: Leggi il PTS REALE del primo frame audio e video
-            actual_audio_start = get_first_audio_pts(temp_segment_path)
-            actual_video_start = get_first_video_pts(temp_segment_path)
+            # PASSO 2: Leggi il tempo di inizio REALE usando metodi multipli
+            actual_start = get_actual_start_time(temp_segment_path)
             
-            # Usa il timestamp audio come riferimento (è quello che conta per i sottotitoli)
-            actual_start = actual_audio_start
+            # Se actual_start è ancora 0 o molto piccolo, usa il timestamp richiesto
+            if actual_start < 1.0:
+                logger.warning(f"Could not detect actual start time, using requested start: {start}")
+                actual_start = start
             
-            logger.info(f"Actual PTS - Audio: {actual_audio_start}, Video: {actual_video_start}")
-            logger.info(f"Requested start: {start}, Actual start: {actual_start}, Difference: {actual_start - start}")
+            logger.info(f"Actual start time detected: {actual_start}")
+            logger.info(f"Requested: {start}, Actual: {actual_start}, Difference: {actual_start - start}")
             
             # PASSO 3: Resetta i PTS per l'output finale
             reset_cmd = [
@@ -374,14 +401,16 @@ def process_video():
                 "-c:a", "aac", "-b:a", "192k",
                 segment_path
             ]
-            subprocess.run(reset_cmd, check=True, capture_output=True)
+            result = subprocess.run(reset_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error(f"FFmpeg reset error: {result.stderr}")
             logger.info(f"PTS reset complete")
 
             # PASSO 4: Applica sottotitoli usando il timestamp REALE come base
             if segment_words:
                 ass_path = os.path.join(tmpdir, f"segment_{output_idx}.ass")
                 
-                # USA actual_start invece di start per i sottotitoli!
+                # Usa actual_start per calcolare i sottotitoli
                 create_copernicus_ass(segment_words, actual_start, ass_path, keywords)
 
                 subtitle_cmd = [
@@ -394,7 +423,9 @@ def process_video():
                     "-b:a", "192k",
                     output_path
                 ]
-                subprocess.run(subtitle_cmd, check=True, capture_output=True)
+                result = subprocess.run(subtitle_cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    logger.error(f"FFmpeg subtitle error: {result.stderr}")
                 logger.info(f"Subtitles applied with actual_start={actual_start}")
             else:
                 output_path = segment_path
