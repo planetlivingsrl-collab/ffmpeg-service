@@ -46,7 +46,7 @@ s3 = (
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "version": "3.4-pts-reset"}), 200
+    return jsonify({"status": "ok", "version": "3.5-actual-pts"}), 200
 
 def format_ass_time(seconds):
     hours = int(seconds // 3600)
@@ -65,19 +65,52 @@ def format_srt_time(milliseconds):
     millis = int((seconds % 1) * 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
-def get_video_start_time(video_path):
-    """Ottieni il timestamp del primo frame del video"""
+def get_first_audio_pts(video_path):
+    """Ottieni il timestamp REALE del primo packet audio"""
+    try:
+        result = subprocess.run([
+            "ffprobe", "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "packet=pts_time",
+            "-of", "csv=p=0",
+            "-read_intervals", "%+0.5",
+            video_path
+        ], capture_output=True, text=True)
+        lines = result.stdout.strip().split('\n')
+        for line in lines:
+            try:
+                pts = float(line)
+                if pts >= 0:
+                    return pts
+            except:
+                continue
+        return 0.0
+    except Exception as e:
+        logger.error(f"Error getting audio PTS: {e}")
+        return 0.0
+
+def get_first_video_pts(video_path):
+    """Ottieni il timestamp REALE del primo frame video"""
     try:
         result = subprocess.run([
             "ffprobe", "-v", "error",
             "-select_streams", "v:0",
-            "-show_entries", "stream=start_time",
-            "-of", "default=noprint_wrappers=1:nokey=1",
+            "-show_entries", "packet=pts_time",
+            "-of", "csv=p=0",
+            "-read_intervals", "%+0.5",
             video_path
         ], capture_output=True, text=True)
-        start_time = float(result.stdout.strip())
-        return start_time
-    except:
+        lines = result.stdout.strip().split('\n')
+        for line in lines:
+            try:
+                pts = float(line)
+                if pts >= 0:
+                    return pts
+            except:
+                continue
+        return 0.0
+    except Exception as e:
+        logger.error(f"Error getting video PTS: {e}")
         return 0.0
 
 def create_copernicus_ass(words, segment_start, output_path, keywords=None):
@@ -90,6 +123,7 @@ def create_copernicus_ass(words, segment_start, output_path, keywords=None):
             keywords_clean.append(kw.lower().strip())
     
     logger.info(f"Keywords for styling: {keywords_clean}")
+    logger.info(f"Creating ASS with segment_start: {segment_start}")
     
     ass_content = """[Script Info]
 ScriptType: v4.00+
@@ -299,33 +333,56 @@ def process_video():
             duration = end - start
 
             segment_words = [w for w in all_words if w['start'] >= start and w['start'] < end]
-            logger.info(f"Segment {output_idx}: {len(segment_words)} words, start={start}, end={end}")
+            logger.info(f"Segment {output_idx}: {len(segment_words)} words, requested start={start}, end={end}")
             
+            temp_segment_path = os.path.join(tmpdir, f"temp_segment_{output_idx}.mp4")
             segment_path = os.path.join(tmpdir, f"segment_{output_idx}.mp4")
             output_path = os.path.join(tmpdir, f"output_{output_idx}.mp4")
 
-            # PASSO 1: Taglio preciso con reset completo dei PTS
-            # setpts=PTS-STARTPTS forza i timestamp video a partire da 0
-            # asetpts=PTS-STARTPTS forza i timestamp audio a partire da 0
-            segment_cmd = [
+            # PASSO 1: Taglio con -copyts per mantenere i timestamp originali
+            # Questo ci permette di sapere ESATTAMENTE dove FFmpeg ha tagliato
+            temp_cut_cmd = [
                 "ffmpeg", "-y",
                 "-i", video_path,
                 "-ss", str(start),
                 "-t", str(duration),
+                "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+                "-c:a", "aac", "-b:a", "192k",
+                "-copyts",
+                temp_segment_path
+            ]
+            logger.info(f"Cutting segment with copyts: start={start}, duration={duration}")
+            subprocess.run(temp_cut_cmd, check=True, capture_output=True)
+            
+            # PASSO 2: Leggi il PTS REALE del primo frame audio e video
+            actual_audio_start = get_first_audio_pts(temp_segment_path)
+            actual_video_start = get_first_video_pts(temp_segment_path)
+            
+            # Usa il timestamp audio come riferimento (è quello che conta per i sottotitoli)
+            actual_start = actual_audio_start
+            
+            logger.info(f"Actual PTS - Audio: {actual_audio_start}, Video: {actual_video_start}")
+            logger.info(f"Requested start: {start}, Actual start: {actual_start}, Difference: {actual_start - start}")
+            
+            # PASSO 3: Resetta i PTS per l'output finale
+            reset_cmd = [
+                "ffmpeg", "-y",
+                "-i", temp_segment_path,
                 "-vf", "setpts=PTS-STARTPTS",
                 "-af", "asetpts=PTS-STARTPTS",
                 "-c:v", "libx264", "-crf", "18", "-preset", "fast",
                 "-c:a", "aac", "-b:a", "192k",
                 segment_path
             ]
-            logger.info(f"Cutting segment: start={start}, duration={duration}")
-            subprocess.run(segment_cmd, check=True, capture_output=True)
-            logger.info(f"Segment cut complete with PTS reset")
+            subprocess.run(reset_cmd, check=True, capture_output=True)
+            logger.info(f"PTS reset complete")
 
-            # PASSO 2: Applica sottotitoli sul video con PTS corretti
+            # PASSO 4: Applica sottotitoli usando il timestamp REALE come base
             if segment_words:
                 ass_path = os.path.join(tmpdir, f"segment_{output_idx}.ass")
-                create_copernicus_ass(segment_words, start, ass_path, keywords)
+                
+                # USA actual_start invece di start per i sottotitoli!
+                create_copernicus_ass(segment_words, actual_start, ass_path, keywords)
 
                 subtitle_cmd = [
                     "ffmpeg", "-y", "-i", segment_path,
@@ -338,7 +395,7 @@ def process_video():
                     output_path
                 ]
                 subprocess.run(subtitle_cmd, check=True, capture_output=True)
-                logger.info(f"Subtitles applied")
+                logger.info(f"Subtitles applied with actual_start={actual_start}")
             else:
                 output_path = segment_path
                 logger.info(f"No words for segment, skipping subtitles")
@@ -352,7 +409,10 @@ def process_video():
                 "segment": output_idx,
                 "url": f"https://cdn.vvcontent.com/{output_key}",
                 "dropbox_path": None,
-                "duration": duration
+                "duration": duration,
+                "actual_start": actual_start,
+                "requested_start": start,
+                "pts_difference": actual_start - start
             })
 
         return jsonify({"success": True, "results": results}), 200
