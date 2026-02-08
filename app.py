@@ -22,6 +22,11 @@ R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY")
 R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY")
 R2_REGION = os.environ.get("R2_REGION", "us-east-1")
 
+# Memory optimization settings
+FFMPEG_THREADS = "2"  # Limit threads to reduce memory
+FFMPEG_PRESET = "ultrafast"  # Uses less memory than fast/medium
+FFMPEG_CRF = "23"  # Slightly lower quality but much less memory
+
 def normalize_region(region):
     if not region or region == "auto":
         return "us-east-1"
@@ -46,7 +51,7 @@ s3 = (
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "version": "3.6-fixed-pts-detection"}), 200
+    return jsonify({"status": "ok", "version": "3.7-memory-optimized"}), 200
 
 def format_ass_time(seconds):
     hours = int(seconds // 3600)
@@ -337,14 +342,9 @@ def process_video():
 
         results = []
         with tempfile.TemporaryDirectory() as tmpdir:
-            video_path = os.path.join(tmpdir, "input.mp4")
+            # OPTIMIZATION: Download only the segment we need using FFmpeg streaming
+            # Instead of downloading the full video, we let FFmpeg handle the range
             
-            try:
-                urllib.request.urlretrieve(video_url, video_path)
-                logger.info(f"Download complete: {os.path.getsize(video_path)} bytes")
-            except Exception as e:
-                return jsonify({"error": f"Download error: {str(e)}"}), 500
-
             all_words = data.get("words", [])
             
             start = target_segment["start"]
@@ -359,76 +359,100 @@ def process_video():
                 logger.info(f"First word timestamp: {first_word_time}")
             
             temp_segment_path = os.path.join(tmpdir, f"temp_segment_{output_idx}.mp4")
-            segment_path = os.path.join(tmpdir, f"segment_{output_idx}.mp4")
             output_path = os.path.join(tmpdir, f"output_{output_idx}.mp4")
 
-            # PASSO 1: Taglio con -copyts per mantenere i timestamp originali
-            temp_cut_cmd = [
+            # OPTIMIZED: Single pass cut with streaming from URL
+            # FFmpeg reads directly from URL, seeking to start position
+            # Uses limited threads and memory-efficient settings
+            cut_cmd = [
                 "ffmpeg", "-y",
-                "-i", video_path,
-                "-ss", str(start),
+                "-threads", FFMPEG_THREADS,
+                "-ss", str(start),  # Seek BEFORE input for faster seeking
+                "-i", video_url,    # Read directly from URL
                 "-t", str(duration),
-                "-c:v", "libx264", "-crf", "18", "-preset", "fast",
-                "-c:a", "aac", "-b:a", "192k",
-                "-copyts",
-                "-start_at_zero",
+                "-c:v", "libx264",
+                "-crf", FFMPEG_CRF,
+                "-preset", FFMPEG_PRESET,
+                "-c:a", "aac",
+                "-b:a", "128k",  # Reduced audio bitrate
+                "-threads", FFMPEG_THREADS,
+                "-max_muxing_queue_size", "1024",  # Limit memory for muxing
                 temp_segment_path
             ]
-            logger.info(f"Cutting segment with copyts: start={start}, duration={duration}")
-            result = subprocess.run(temp_cut_cmd, capture_output=True, text=True)
+            
+            logger.info(f"Cutting segment directly from URL: start={start}, duration={duration}")
+            result = subprocess.run(cut_cmd, capture_output=True, text=True)
             if result.returncode != 0:
                 logger.error(f"FFmpeg cut error: {result.stderr}")
+                # Fallback: try downloading first if streaming fails
+                logger.info("Streaming failed, falling back to download method")
+                video_path = os.path.join(tmpdir, "input.mp4")
+                urllib.request.urlretrieve(video_url, video_path)
+                logger.info(f"Download complete: {os.path.getsize(video_path)} bytes")
+                
+                cut_cmd_fallback = [
+                    "ffmpeg", "-y",
+                    "-threads", FFMPEG_THREADS,
+                    "-ss", str(start),
+                    "-i", video_path,
+                    "-t", str(duration),
+                    "-c:v", "libx264",
+                    "-crf", FFMPEG_CRF,
+                    "-preset", FFMPEG_PRESET,
+                    "-c:a", "aac",
+                    "-b:a", "128k",
+                    "-threads", FFMPEG_THREADS,
+                    temp_segment_path
+                ]
+                result = subprocess.run(cut_cmd_fallback, capture_output=True, text=True)
+                if result.returncode != 0:
+                    logger.error(f"FFmpeg fallback cut error: {result.stderr}")
+                    return jsonify({"error": f"FFmpeg error: {result.stderr[:500]}"}), 500
+                
+                # Clean up downloaded file immediately to free disk space
+                try:
+                    os.remove(video_path)
+                    logger.info("Cleaned up downloaded video file")
+                except:
+                    pass
+            
             logger.info(f"Cut complete")
             
-            # PASSO 2: Leggi il tempo di inizio REALE usando metodi multipli
-            actual_start = get_actual_start_time(temp_segment_path)
-            
-            # Se actual_start è ancora 0 o molto piccolo, usa il timestamp richiesto
-            if actual_start < 1.0:
-                logger.warning(f"Could not detect actual start time, using requested start: {start}")
-                actual_start = start
-            
-            logger.info(f"Actual start time detected: {actual_start}")
-            logger.info(f"Requested: {start}, Actual: {actual_start}, Difference: {actual_start - start}")
-            
-            # PASSO 3: Resetta i PTS per l'output finale
-            reset_cmd = [
-                "ffmpeg", "-y",
-                "-i", temp_segment_path,
-                "-vf", "setpts=PTS-STARTPTS",
-                "-af", "asetpts=PTS-STARTPTS",
-                "-c:v", "libx264", "-crf", "18", "-preset", "fast",
-                "-c:a", "aac", "-b:a", "192k",
-                segment_path
-            ]
-            result = subprocess.run(reset_cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                logger.error(f"FFmpeg reset error: {result.stderr}")
-            logger.info(f"PTS reset complete")
+            # For subtitle timing, use the requested start time
+            # Since we're using -ss before -i, the output starts at 0
+            actual_start = start
+            logger.info(f"Using start time for subtitles: {actual_start}")
 
-            # PASSO 4: Applica sottotitoli usando il timestamp REALE come base
+            # OPTIMIZED: Apply subtitles in single pass (no separate PTS reset needed)
             if segment_words:
                 ass_path = os.path.join(tmpdir, f"segment_{output_idx}.ass")
-                
-                # Usa actual_start per calcolare i sottotitoli
                 create_copernicus_ass(segment_words, actual_start, ass_path, keywords)
 
                 subtitle_cmd = [
-                    "ffmpeg", "-y", "-i", segment_path,
+                    "ffmpeg", "-y",
+                    "-threads", FFMPEG_THREADS,
+                    "-i", temp_segment_path,
                     "-vf", f"ass={ass_path}",
                     "-c:v", "libx264",
-                    "-crf", "18",
-                    "-preset", "medium",
-                    "-c:a", "aac",
-                    "-b:a", "192k",
+                    "-crf", FFMPEG_CRF,
+                    "-preset", FFMPEG_PRESET,
+                    "-c:a", "copy",  # Copy audio without re-encoding
+                    "-threads", FFMPEG_THREADS,
+                    "-max_muxing_queue_size", "1024",
                     output_path
                 ]
                 result = subprocess.run(subtitle_cmd, capture_output=True, text=True)
                 if result.returncode != 0:
                     logger.error(f"FFmpeg subtitle error: {result.stderr}")
-                logger.info(f"Subtitles applied with actual_start={actual_start}")
+                logger.info(f"Subtitles applied")
+                
+                # Clean up temp segment to free memory
+                try:
+                    os.remove(temp_segment_path)
+                except:
+                    pass
             else:
-                output_path = segment_path
+                output_path = temp_segment_path
                 logger.info(f"No words for segment, skipping subtitles")
 
             filename = video_url.split('/')[-1]
@@ -443,7 +467,7 @@ def process_video():
                 "duration": duration,
                 "actual_start": actual_start,
                 "requested_start": start,
-                "pts_difference": actual_start - start
+                "pts_difference": 0
             })
 
         return jsonify({"success": True, "results": results}), 200
