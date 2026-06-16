@@ -51,7 +51,7 @@ s3 = (
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "version": "3.7-memory-optimized"}), 200
+    return jsonify({"status": "ok", "version": "3.8-sonnet-4-6"}), 200
 
 def format_ass_time(seconds):
     hours = int(seconds // 3600)
@@ -259,7 +259,7 @@ def identify_keywords():
         }
         
         payload = {
-            "model": "claude-sonnet-4-20250514",
+            "model": "claude-sonnet-4-6",
             "max_tokens": 500,
             "messages": [{
                 "role": "user",
@@ -267,16 +267,30 @@ def identify_keywords():
             }]
         }
         
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers=headers,
-            json=payload,
-            timeout=30
-        )
+        # Retry su errori temporanei (529 overload, 500, 503) con backoff
+        response = None
+        max_retries = 5
+        for attempt in range(max_retries):
+            response = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            if response.status_code == 200:
+                break
+            if response.status_code in (429, 500, 503, 529):
+                wait = 10 * (attempt + 1)
+                logger.warning(f"Anthropic API {response.status_code}, retry {attempt + 1}/{max_retries} tra {wait}s")
+                time.sleep(wait)
+                continue
+            # Errore non transitorio: esci subito
+            break
         
-        if response.status_code != 200:
-            logger.error(f"Anthropic API error: {response.status_code}")
-            return jsonify({"error": f"API error: {response.status_code}"}), 500
+        if response is None or response.status_code != 200:
+            status = response.status_code if response is not None else "no response"
+            logger.error(f"Anthropic API error: {status}")
+            return jsonify({"error": f"API error: {status}"}), 500
         
         response_data = response.json()
         response_text = response_data["content"][0]["text"]
