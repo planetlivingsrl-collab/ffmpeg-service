@@ -8,7 +8,9 @@ import urllib.request
 import time
 import re
 import json
+import unicodedata
 import requests
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
@@ -26,6 +28,14 @@ R2_REGION = os.environ.get("R2_REGION", "us-east-1")
 FFMPEG_THREADS = "2"  # Limit threads to reduce memory
 FFMPEG_PRESET = "ultrafast"  # Uses less memory than fast/medium
 FFMPEG_CRF = "23"  # Slightly lower quality but much less memory
+
+# Estrazione audio per la trascrizione
+AUDIO_OUTPUT_BUCKET = "shortconsottotitoli"  # bucket servito da cdn.vvcontent.com
+AUDIO_PUBLIC_BASE = "https://cdn.vvcontent.com"
+AUDIO_PREFIX = "audio/"
+AUDIO_BITRATE = "96k"
+AUDIO_SAMPLE_RATE = "44100"
+EXTRACT_TIMEOUT_SECONDS = 1800  # limite di sicurezza per un singolo FFmpeg
 
 def normalize_region(region):
     if not region or region == "auto":
@@ -51,7 +61,7 @@ s3 = (
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "version": "3.8-sonnet-4-6"}), 200
+    return jsonify({"status": "ok", "version": "3.9-extract-audio"}), 200
 
 def format_ass_time(seconds):
     hours = int(seconds // 3600)
@@ -116,39 +126,39 @@ def get_first_packet_pts(video_path, stream_type="a"):
 
 def get_actual_start_time(video_path):
     """Ottieni il tempo di inizio effettivo del video usando metodi multipli"""
-    
+
     audio_stream_start = get_stream_start_time(video_path, "a")
     logger.info(f"Audio stream start_time: {audio_stream_start}")
-    
+
     if audio_stream_start is not None and audio_stream_start > 0:
         return audio_stream_start
-    
+
     audio_packet_pts = get_first_packet_pts(video_path, "a")
     logger.info(f"Audio first packet PTS: {audio_packet_pts}")
-    
+
     if audio_packet_pts is not None and audio_packet_pts > 0:
         return audio_packet_pts
-    
+
     video_stream_start = get_stream_start_time(video_path, "v")
     logger.info(f"Video stream start_time: {video_stream_start}")
-    
+
     if video_stream_start is not None and video_stream_start > 0:
         return video_stream_start
-    
+
     return 0.0
 
 def create_copernicus_ass(words, segment_start, output_path, keywords=None):
     if keywords is None:
         keywords = []
-    
+
     keywords_clean = []
     for kw in keywords:
         if isinstance(kw, str):
             keywords_clean.append(kw.lower().strip())
-    
+
     logger.info(f"Keywords for styling: {keywords_clean}")
     logger.info(f"Creating ASS with segment_start: {segment_start}")
-    
+
     ass_content = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -163,43 +173,43 @@ Style: Keyword,Arial Black,60,&H000000FF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-    
+
     chunk_size = 4
     max_chars_per_line = 24
-    
+
     chunks = []
     for i in range(0, len(words), chunk_size):
         chunk_words = words[i:i + chunk_size]
         chunks.append(chunk_words)
-    
+
     keyword_count = 0
-    
+
     for chunk in chunks:
         if not chunk:
             continue
-        
+
         start_time = chunk[0]['start'] - segment_start
         end_time = chunk[-1]['end'] - segment_start
-        
+
         start_ass = format_ass_time(max(0, start_time))
         end_ass = format_ass_time(max(0, end_time))
-        
+
         words_in_chunk = []
         for word in chunk:
             word_text = word['text'].strip().upper()
             word_lower = word['text'].strip().lower()
             word_clean = ''.join(c for c in word_lower if c.isalnum())
-            
+
             word_duration_secs = word['end'] - word['start']
             word_duration_centis = max(1, round(word_duration_secs * 100))
-            
+
             is_keyword = False
             for kw in keywords_clean:
                 kw_clean = ''.join(c for c in kw if c.isalnum())
                 if word_clean == kw_clean:
                     is_keyword = True
                     break
-            
+
             if is_keyword:
                 words_in_chunk.append({
                     'text': word_text,
@@ -213,9 +223,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     'styled': f"{{\\kf{word_duration_centis}}}{word_text}",
                     'is_keyword': False
                 })
-        
+
         total_text = ' '.join([w['text'] for w in words_in_chunk])
-        
+
         if len(total_text) > max_chars_per_line and len(words_in_chunk) > 1:
             mid = len(words_in_chunk) // 2
             line1 = ' '.join([w['styled'] for w in words_in_chunk[:mid]])
@@ -223,12 +233,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             styled_text = f"{line1}\\N{line2}"
         else:
             styled_text = ' '.join([w['styled'] for w in words_in_chunk])
-        
+
         dialogue_line = f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{styled_text}\n"
         ass_content += dialogue_line
-    
+
     logger.info(f"Total keywords highlighted: {keyword_count}")
-    
+
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(ass_content)
 
@@ -237,27 +247,27 @@ def identify_keywords():
     try:
         raw_data = request.get_json()
         logger.info("Received keyword identification request")
-        
+
         if isinstance(raw_data, dict):
             data = raw_data.get("body", raw_data)
         else:
             data = raw_data
-        
+
         full_text = data.get("full_text", "")
-        
+
         if not full_text:
             return jsonify({"error": "Missing full_text"}), 400
-        
+
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
-        
+
         headers = {
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json"
         }
-        
+
         payload = {
             "model": "claude-sonnet-4-6",
             "max_tokens": 500,
@@ -266,7 +276,7 @@ def identify_keywords():
                 "content": f"Analizza questo testo in italiano e identifica le PAROLE CHIAVE più importanti e attraenti per chi guarda (ad esempio nomi propri, numeri come prezzi, luoghi, termini tecnici). NON includere verbi comuni, articoli, congiunzioni. Rispondi SOLO con un array JSON, tutto minuscolo.\n\nTesto: {full_text}\n\nFormato: [\"parola1\", \"parola2\"]"
             }]
         }
-        
+
         # Retry su errori temporanei (529 overload, 500, 503) con backoff
         response = None
         max_retries = 5
@@ -286,28 +296,28 @@ def identify_keywords():
                 continue
             # Errore non transitorio: esci subito
             break
-        
+
         if response is None or response.status_code != 200:
             status = response.status_code if response is not None else "no response"
             logger.error(f"Anthropic API error: {status}")
             return jsonify({"error": f"API error: {status}"}), 500
-        
+
         response_data = response.json()
         response_text = response_data["content"][0]["text"]
-        
+
         keywords_match = re.search(r'\[.*?\]', response_text, re.DOTALL)
         keywords = []
-        
+
         if keywords_match:
             keywords = json.loads(keywords_match.group(0))
-        
+
         logger.info(f"Identified {len(keywords)} keywords: {keywords}")
-        
+
         return jsonify({
             "success": True,
             "keywords": keywords
         }), 200
-        
+
     except Exception as e:
         logger.error(f"Error: {str(e)}")
         import traceback
@@ -319,7 +329,7 @@ def process_video():
     try:
         raw_data = request.get_json()
         logger.info("Received process request")
-        
+
         if isinstance(raw_data, dict):
             data = raw_data.get("body", raw_data)
         else:
@@ -329,20 +339,20 @@ def process_video():
         segments = data.get("segments")
         output_bucket = data.get("output_bucket", "shortconsottotitoli")
         keywords = data.get("keywords", [])
-        
+
         logger.info(f"Keywords received: {keywords}")
-        
+
         segment_idx = data.get("segment_index", 0)
         output_idx = data.get("output_index", segment_idx)
-        
+
         if isinstance(segment_idx, str):
             segment_idx = int(segment_idx)
         if isinstance(output_idx, str):
             output_idx = int(output_idx)
-        
+
         if not segments:
             return jsonify({"error": "Missing segments"}), 400
-        
+
         if not video_url:
             return jsonify({"error": "Missing video_url"}), 400
 
@@ -351,27 +361,27 @@ def process_video():
 
         if segment_idx >= len(segments):
             return jsonify({"error": f"segment_index {segment_idx} out of range"}), 400
-        
+
         target_segment = segments[segment_idx]
 
         results = []
         with tempfile.TemporaryDirectory() as tmpdir:
             # OPTIMIZATION: Download only the segment we need using FFmpeg streaming
             # Instead of downloading the full video, we let FFmpeg handle the range
-            
+
             all_words = data.get("words", [])
-            
+
             start = target_segment["start"]
             end = target_segment["end"]
             duration = end - start
 
             segment_words = [w for w in all_words if w['start'] >= start and w['start'] < end]
             logger.info(f"Segment {output_idx}: {len(segment_words)} words, requested start={start}, end={end}")
-            
+
             if segment_words:
                 first_word_time = segment_words[0]['start']
                 logger.info(f"First word timestamp: {first_word_time}")
-            
+
             temp_segment_path = os.path.join(tmpdir, f"temp_segment_{output_idx}.mp4")
             output_path = os.path.join(tmpdir, f"output_{output_idx}.mp4")
 
@@ -393,7 +403,7 @@ def process_video():
                 "-max_muxing_queue_size", "1024",  # Limit memory for muxing
                 temp_segment_path
             ]
-            
+
             logger.info(f"Cutting segment directly from URL: start={start}, duration={duration}")
             result = subprocess.run(cut_cmd, capture_output=True, text=True)
             if result.returncode != 0:
@@ -403,7 +413,7 @@ def process_video():
                 video_path = os.path.join(tmpdir, "input.mp4")
                 urllib.request.urlretrieve(video_url, video_path)
                 logger.info(f"Download complete: {os.path.getsize(video_path)} bytes")
-                
+
                 cut_cmd_fallback = [
                     "ffmpeg", "-y",
                     "-threads", FFMPEG_THREADS,
@@ -422,16 +432,16 @@ def process_video():
                 if result.returncode != 0:
                     logger.error(f"FFmpeg fallback cut error: {result.stderr}")
                     return jsonify({"error": f"FFmpeg error: {result.stderr[:500]}"}), 500
-                
+
                 # Clean up downloaded file immediately to free disk space
                 try:
                     os.remove(video_path)
                     logger.info("Cleaned up downloaded video file")
                 except:
                     pass
-            
+
             logger.info(f"Cut complete")
-            
+
             # For subtitle timing, use the requested start time
             # Since we're using -ss before -i, the output starts at 0
             actual_start = start
@@ -459,7 +469,7 @@ def process_video():
                 if result.returncode != 0:
                     logger.error(f"FFmpeg subtitle error: {result.stderr}")
                 logger.info(f"Subtitles applied")
-                
+
                 # Clean up temp segment to free memory
                 try:
                     os.remove(temp_segment_path)
@@ -471,7 +481,7 @@ def process_video():
 
             filename = video_url.split('/')[-1]
             output_key = f"segment_{output_idx}_{filename}"
-            
+
             s3.upload_file(output_path, output_bucket, output_key)
 
             results.append({
@@ -496,7 +506,7 @@ def process_video():
 def generate_srt():
     try:
         raw_data = request.get_json()
-        
+
         if isinstance(raw_data, dict):
             data = raw_data.get("body", raw_data)
         else:
@@ -505,7 +515,7 @@ def generate_srt():
         words = data.get("words", [])
         video_url = data.get("video_url", None)
         output_bucket = data.get("output_bucket", "shortconsottotitoli")
-        
+
         if not words:
             return jsonify({"error": "Missing words"}), 400
 
@@ -515,40 +525,40 @@ def generate_srt():
         srt_content = ""
         chunk_size = 4
         subtitle_index = 1
-        
+
         for i in range(0, len(words), chunk_size):
             chunk = words[i:i + chunk_size]
             if not chunk:
                 continue
-            
+
             start_ms = chunk[0]['start']
             end_ms = chunk[-1]['end']
-            
+
             start_time = format_srt_time(start_ms)
             end_time = format_srt_time(end_ms)
-            
+
             text = " ".join([w['text'] for w in chunk])
-            
+
             srt_content += f"{subtitle_index}\n"
             srt_content += f"{start_time} --> {end_time}\n"
             srt_content += f"{text}\n\n"
-            
+
             subtitle_index += 1
-        
+
         if video_url:
             filename = video_url.split('/')[-1].replace('.mp4', '_subtitles.srt')
         else:
             filename = f"subtitles_{int(time.time())}.srt"
-        
+
         with tempfile.NamedTemporaryFile(mode='w', suffix='.srt', delete=False, encoding='utf-8') as tmp:
             tmp.write(srt_content)
             tmp_path = tmp.name
-        
+
         try:
             s3.upload_file(tmp_path, output_bucket, filename)
         finally:
             os.unlink(tmp_path)
-        
+
         return jsonify({
             "success": True,
             "srt_url": f"https://cdn.vvcontent.com/{filename}",
@@ -556,6 +566,192 @@ def generate_srt():
             "filename": filename
         }), 200
 
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+# ============================================================
+# ESTRAZIONE AUDIO PER LA TRASCRIZIONE (v3.9)
+# AssemblyAI riceve un file audio leggero invece del video intero.
+# ============================================================
+
+class NoAudioTrackError(Exception):
+    pass
+
+_audio_encoder_cache = None
+
+def get_audio_encoder():
+    """MP3 se FFmpeg ha libmp3lame, altrimenti AAC in M4A (AssemblyAI li accetta entrambi)."""
+    global _audio_encoder_cache
+    if _audio_encoder_cache is None:
+        try:
+            listing = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-encoders"],
+                capture_output=True, text=True, timeout=30
+            ).stdout
+        except Exception:
+            listing = ""
+        if "libmp3lame" in listing:
+            _audio_encoder_cache = {
+                "codec": "libmp3lame", "ext": "mp3",
+                "content_type": "audio/mpeg", "extra": []
+            }
+        else:
+            _audio_encoder_cache = {
+                "codec": "aac", "ext": "m4a",
+                "content_type": "audio/mp4", "extra": ["-movflags", "+faststart"]
+            }
+    return _audio_encoder_cache
+
+def encode_url(url):
+    """Codifica gli accenti nel percorso (è diventa %C3%A8) senza ricodificare quelli già codificati."""
+    parts = urlsplit(url)
+    path = quote(parts.path, safe="/%")
+    query = quote(parts.query, safe="=&%")
+    return urlunsplit((parts.scheme, parts.netloc, path, query, parts.fragment))
+
+def ascii_slug(text):
+    """perchèfloridavertical diventa perchefloridavertical: solo lettere, numeri, _ e -."""
+    text = unquote(text)
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[^A-Za-z0-9_-]+", "_", text).strip("_-")
+    return text or "audio"
+
+def build_extract_cmd(source, output_path, encoder, remote):
+    cmd = ["ffmpeg", "-hide_banner", "-nostdin", "-y", "-loglevel", "error"]
+    if remote:
+        # Riconnessione automatica se la connessione con R2 cade a metà
+        cmd += ["-reconnect", "1", "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "10", "-rw_timeout", "60000000"]
+    cmd += [
+        "-i", source,
+        # Uscita 1: solo la prima traccia audio, mono.
+        # aresample=async=1:first_pts=0 allinea l'audio all'inizio del video:
+        # se la traccia audio parte in ritardo aggiunge silenzio, se ci sono buchi li riempie.
+        # Così i tempi delle parole coincidono con i tempi che /process usa per tagliare.
+        "-map", "0:a:0", "-vn", "-sn", "-dn",
+        "-af", "aresample=async=1:first_pts=0",
+        "-ac", "1", "-ar", AUDIO_SAMPLE_RATE,
+        "-c:a", encoder["codec"], "-b:a", AUDIO_BITRATE,
+    ] + encoder["extra"] + [output_path]
+    if remote:
+        # Uscita 2: il video viene letto e scartato senza decodificarlo.
+        # Garantisce che il file su R2 venga letto in sequenza, con una sola
+        # connessione, qualunque sia la versione di FFmpeg installata.
+        cmd += ["-map", "0:v?", "-c", "copy", "-f", "null", "-"]
+    return cmd
+
+def run_audio_extraction(source, output_path, encoder, remote):
+    cmd = build_extract_cmd(source, output_path, encoder, remote)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=EXTRACT_TIMEOUT_SECONDS)
+    if result.returncode != 0:
+        stderr = result.stderr or ""
+        if "matches no streams" in stderr:
+            raise NoAudioTrackError("Il video non contiene una traccia audio")
+        raise RuntimeError(f"FFmpeg error: {stderr[-800:]}")
+    if not os.path.exists(output_path) or os.path.getsize(output_path) < 1000:
+        raise RuntimeError("FFmpeg ha prodotto un file audio vuoto")
+
+def download_to_file(url, dest_path):
+    with requests.get(url, stream=True, timeout=(30, 120)) as r:
+        r.raise_for_status()
+        with open(dest_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+    return os.path.getsize(dest_path)
+
+def probe_duration(path):
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=60
+        ).stdout.strip()
+        return round(float(out), 3)
+    except Exception:
+        return None
+
+@app.get("/extract_audio")
+def extract_audio_status():
+    # Apri questo indirizzo nel browser per verificare che il deploy sia attivo
+    encoder = get_audio_encoder()
+    return jsonify({
+        "status": "ok",
+        "endpoint": "extract_audio",
+        "format": encoder["ext"],
+        "encoder": encoder["codec"]
+    }), 200
+
+@app.post("/extract_audio")
+def extract_audio():
+    started = time.time()
+    try:
+        raw_data = request.get_json(silent=True) or {}
+        data = raw_data.get("body", raw_data) if isinstance(raw_data, dict) else {}
+
+        video_url = (data.get("video_url") or "").strip()
+        if not video_url:
+            return jsonify({"error": "Missing video_url"}), 400
+        if not s3:
+            return jsonify({"error": "S3 client not configured"}), 500
+
+        encoder = get_audio_encoder()
+        safe_url = encode_url(video_url)
+        video_name = os.path.splitext(urlsplit(video_url).path.split("/")[-1])[0]
+        audio_key = f"{AUDIO_PREFIX}{ascii_slug(video_name)}.{encoder['ext']}"
+        logger.info(f"Extract audio: {safe_url} -> {AUDIO_OUTPUT_BUCKET}/{audio_key}")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_path = os.path.join(tmpdir, f"audio.{encoder['ext']}")
+            method = "stream"
+            try:
+                run_audio_extraction(safe_url, audio_path, encoder, remote=True)
+            except NoAudioTrackError:
+                raise
+            except Exception as e:
+                # Piano B: scarico il video su disco e lo elaboro in locale
+                logger.warning(f"Lettura diretta fallita ({e}), passo al download completo")
+                method = "download"
+                video_path = os.path.join(tmpdir, "input_video")
+                size = download_to_file(safe_url, video_path)
+                logger.info(f"Download completo: {size} bytes")
+                try:
+                    run_audio_extraction(video_path, audio_path, encoder, remote=False)
+                finally:
+                    try:
+                        os.remove(video_path)
+                    except Exception:
+                        pass
+
+            duration = probe_duration(audio_path)
+            size_bytes = os.path.getsize(audio_path)
+            s3.upload_file(
+                audio_path, AUDIO_OUTPUT_BUCKET, audio_key,
+                ExtraArgs={"ContentType": encoder["content_type"]}
+            )
+
+        elapsed = round(time.time() - started, 1)
+        logger.info(f"Audio pronto: {audio_key}, {size_bytes} bytes, {duration}s audio, {elapsed}s ({method})")
+
+        return jsonify({
+            "success": True,
+            "audio_url": f"{AUDIO_PUBLIC_BASE}/{audio_key}",
+            "audio_key": audio_key,
+            "bucket": AUDIO_OUTPUT_BUCKET,
+            "duration": duration,
+            "size_bytes": size_bytes,
+            "format": encoder["ext"],
+            "method": method,
+            "elapsed_seconds": elapsed,
+            "video_url": video_url
+        }), 200
+
+    except NoAudioTrackError as e:
+        logger.error(str(e))
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.error(f"Error: {str(e)}")
         import traceback
